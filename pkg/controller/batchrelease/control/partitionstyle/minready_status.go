@@ -30,15 +30,21 @@ import (
 	"github.com/openkruise/rollouts/pkg/util"
 )
 
-// MinReadyStatusBinder injects BatchRelease status/event dependencies into
-// MinReadyControl before lifecycle methods run.
+// StrategyStatusBinder injects BatchRelease status/event dependencies into
+// strategy-specific controllers before lifecycle methods run.
+type StrategyStatusBinder interface {
+	BindStrategyStatus(release *v1beta1.BatchRelease, status *v1beta1.BatchReleaseStatus, recorder record.EventRecorder)
+}
+
+// MinReadyStatusBinder is kept for compatibility with older MinReady-specific
+// implementations. The control plane uses StrategyStatusBinder.
 type MinReadyStatusBinder interface {
 	BindMinReadyStatus(release *v1beta1.BatchRelease, status *v1beta1.BatchReleaseStatus, recorder record.EventRecorder)
 }
 
-// MinReadyLifecycle records MinReady-specific status from control-plane batch
+// StrategyLifecycle records strategy-specific status from control-plane batch
 // paths that are not Initialize/UpgradeBatch/Finalize.
-type MinReadyLifecycle interface {
+type StrategyLifecycle interface {
 	RecordZeroReplicaBatching()
 	RecordBatchAdvanced()
 	RecordZeroReplicaBatchReady()
@@ -48,6 +54,8 @@ type MinReadyLifecycle interface {
 	RecordInitialized()
 	RecordFinalized()
 }
+
+type MinReadyLifecycle = StrategyLifecycle
 
 // MinReadyDriftReconciler converges inflated maxUnavailable back to the active
 // batch target. EnsureBatchPodsReadyAndLabeled calls it so external drift is
@@ -94,6 +102,7 @@ func (w *MinReadyStatusWriter) RecordNormal(condType v1beta1.RolloutConditionTyp
 	if reason == "MinReadyFinalized" {
 		clearMinReadyDegraded(w.status)
 		w.status.Message = ""
+		brmetrics.DeleteMinReadyMetrics(w.release)
 	}
 	if reason == "MinReadyBatchReady" {
 		observeMinReadyBatchDuration(w.release, previousCondition)
@@ -102,7 +111,7 @@ func (w *MinReadyStatusWriter) RecordNormal(condType v1beta1.RolloutConditionTyp
 	if reason == "MinReadyBatchReady" || reason == "MinReadyFinalized" {
 		brmetrics.ClearMinReadyStuckSeconds(w.release, brmetrics.StuckReasonBatchReadyTimeout)
 	}
-	if w.recorder != nil && w.release != nil {
+	if w.recorder != nil && w.release != nil && shouldRecordMinReadyNormalEvent(reason) {
 		w.recorder.Event(w.release, v1.EventTypeNormal, reason, message)
 	}
 }
@@ -152,6 +161,10 @@ func ObserveMinReadyBatchWait(release *v1beta1.BatchRelease, condition *v1beta1.
 func clearMinReadyDegraded(status *v1beta1.BatchReleaseStatus) {
 	condition := util.NewRolloutCondition(v1beta1.RolloutConditionMinReadyDegraded, v1.ConditionFalse, "MinReadyHealthy", "")
 	util.SetBatchReleaseCondition(status, *condition)
+}
+
+func shouldRecordMinReadyNormalEvent(reason string) bool {
+	return reason != "MinReadyBatching"
 }
 
 type minReadyDegradedReason struct {

@@ -23,6 +23,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/openkruise/rollouts/api/v1beta1"
 )
@@ -47,8 +48,48 @@ func TestMinReadyMetricsRecorders(t *testing.T) {
 		t.Fatalf("histogram observer does not implement prometheus.Metric")
 	}
 	assertHistogramCountPositive(t, histogram)
-	assertGaugeValue(t, minReadyStuckSeconds.WithLabelValues("rollout-a", "default", StuckReasonBatchReadyTimeout), 0)
+	assertMetricAbsent(t, "rollout_minready_stuck_seconds", map[string]string{
+		"rollout":   "rollout-a",
+		"namespace": "default",
+		"reason":    StuckReasonBatchReadyTimeout,
+	})
 	assertCounterPositive(t, minReadyDegradedTotal.WithLabelValues("rollout-a", "default", DegradedReasonControllerError))
+}
+
+func TestDeleteMinReadyMetricsDeletesLabelValues(t *testing.T) {
+	release := &v1beta1.BatchRelease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rollout-cleanup",
+			Namespace: "default",
+		},
+	}
+
+	RecordMinReadyBatch(release, BatchResultSuccess)
+	ObserveMinReadyBatchDuration(release, 2*time.Second)
+	SetMinReadyStuckSeconds(release, StuckReasonBatchReadyTimeout, 3)
+	RecordMinReadyDegraded(release, DegradedReasonControllerError)
+
+	DeleteMinReadyMetrics(release)
+
+	assertMetricAbsent(t, "rollout_minready_batches_total", map[string]string{
+		"rollout":   release.Name,
+		"namespace": release.Namespace,
+		"result":    BatchResultSuccess,
+	})
+	assertMetricAbsent(t, "rollout_minready_batch_duration_seconds", map[string]string{
+		"rollout":   release.Name,
+		"namespace": release.Namespace,
+	})
+	assertMetricAbsent(t, "rollout_minready_stuck_seconds", map[string]string{
+		"rollout":   release.Name,
+		"namespace": release.Namespace,
+		"reason":    StuckReasonBatchReadyTimeout,
+	})
+	assertMetricAbsent(t, "rollout_minready_degraded_total", map[string]string{
+		"rollout":   release.Name,
+		"namespace": release.Namespace,
+		"reason":    DegradedReasonControllerError,
+	})
 }
 
 func assertCounterPositive(t *testing.T, metric interface{ Write(*dto.Metric) error }) {
@@ -82,4 +123,38 @@ func assertHistogramCountPositive(t *testing.T, metric interface{ Write(*dto.Met
 	if got.Histogram == nil || got.Histogram.GetSampleCount() == 0 {
 		t.Fatalf("histogram = %v, want sample count > 0", got.Histogram)
 	}
+}
+
+func assertMetricAbsent(t *testing.T, name string, labels map[string]string) {
+	t.Helper()
+	metrics, err := ctrlmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics failed: %v", err)
+	}
+	for _, family := range metrics {
+		if family.GetName() != name {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			if metricLabelsMatch(metric, labels) {
+				t.Fatalf("metric %s with labels %v still exists", name, labels)
+			}
+		}
+	}
+}
+
+func metricLabelsMatch(metric *dto.Metric, labels map[string]string) bool {
+	for key, want := range labels {
+		matched := false
+		for _, pair := range metric.GetLabel() {
+			if pair.GetName() == key && pair.GetValue() == want {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
 }

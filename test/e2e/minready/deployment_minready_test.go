@@ -151,5 +151,32 @@ var _ = SIGDescribe("Deployment MinReadySeconds", func() {
 			restoreMinReadyE2EOriginalAnnotation(namespace, partitiondeployment.AnnotationOriginalMaxUnavailable, "25%")
 			finishMinReadyE2ERollout(namespace, rollout.Name)
 		})
+
+		// TC9 verifies the native Kubernetes Deployment controller's pod-level
+		// behavior during a MinReady rollout. Existing TCs only assert the
+		// rollout controller's intended Spec.MaxUnavailable value; this TC
+		// asserts the actual pod counts the native Deployment controller
+		// produces (UpdatedReplicas, Replicas, ReadyReplicas), proving the
+		// MaxSurge/MaxUnavailable boundaries are respected end-to-end.
+		It("TC9 native Deployment controller respects MaxSurge and reaches batch targets during MinReady rollout", func() {
+			rollout := startMinReadyE2ERollout(namespace)
+			waitMinReadyE2ERolloutStepPaused(namespace, rollout.Name, 1)
+
+			// Step 1 (20% of 5 replicas = 1): surge bounded by MaxSurge=1,
+			// at least 1 updated pod, all updated pods Ready.
+			expectMinReadyE2EDeploymentPodInvariants(namespace, 5, 1, 1)
+
+			resumeMinReadyE2ERollout(namespace, rollout.Name)
+			waitMinReadyE2ERolloutStepPaused(namespace, rollout.Name, 2)
+
+			// Step 2 (50% of 5 replicas = 3): surge bounded, at least 3
+			// updated pods (NewRSReplicasLimit caps at min(ceil(5*0.5), 4)=3).
+			expectMinReadyE2EDeploymentPodInvariants(namespace, 5, 1, 3)
+
+			finishMinReadyE2ERollout(namespace, rollout.Name)
+
+			// Final steady state: all 5 pods updated, ready, no surge.
+			expectMinReadyE2EDeploymentFinalState(namespace, 5)
+		})
 	})
 })

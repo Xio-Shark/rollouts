@@ -77,7 +77,7 @@ func (f *fakePartitionController) BuildController() (Interface, error) {
 	return f, nil
 }
 
-func (f *fakePartitionController) BindMinReadyStatus(release *v1beta1.BatchRelease, status *v1beta1.BatchReleaseStatus, recorder record.EventRecorder) {
+func (f *fakePartitionController) BindStrategyStatus(release *v1beta1.BatchRelease, status *v1beta1.BatchReleaseStatus, recorder record.EventRecorder) {
 	if f.minReady {
 		f.statusWriter = NewMinReadyStatusWriter(release, status, recorder)
 	}

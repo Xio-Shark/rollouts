@@ -174,3 +174,46 @@ func expectMinReadyE2EOriginalAnnotationAbsent(namespace string) {
 func setMinReadyE2EInitialReplicas(deployment *apps.Deployment, replicas int32) {
 	deployment.Spec.Replicas = pointer.Int32(replicas)
 }
+
+// expectMinReadyE2EDeploymentPodInvariants asserts that the native Kubernetes
+// Deployment controller respects the MaxSurge boundary and has rolled out at
+// least minUpdated pods with all updated pods reaching Ready. This verifies
+// the native controller behavior (not just the rollout controller's spec patch)
+// — the Deployment controller must actually create/terminate pods according to
+// the MaxSurge/MaxUnavailable boundaries the MinReady controller sets.
+func expectMinReadyE2EDeploymentPodInvariants(namespace string, desired, maxSurge, minUpdated int32) {
+	Eventually(func() bool {
+		deployment := &apps.Deployment{}
+		key := types.NamespacedName{Namespace: namespace, Name: minReadyE2EDeploymentName}
+		Expect(k8sClient.Get(context.TODO(), key, deployment)).Should(Succeed())
+		// Surge invariant: total pods never exceed desired + MaxSurge.
+		if deployment.Status.Replicas > desired+maxSurge {
+			return false
+		}
+		// Batch target reached: at least minUpdated pods rolled out.
+		if deployment.Status.UpdatedReplicas < minUpdated {
+			return false
+		}
+		// MinReady controller only advances MaxUnavailable when pods become
+		// Ready, so every updated pod should be Ready at the paused state.
+		if deployment.Status.ReadyReplicas < deployment.Status.UpdatedReplicas {
+			return false
+		}
+		return true
+	}, 5*time.Minute, time.Second).Should(BeTrue(),
+		fmt.Sprintf("pod invariants not satisfied: want minUpdated=%d surgeBound=%d", minUpdated, desired+maxSurge))
+}
+
+// expectMinReadyE2EDeploymentFinalState asserts the native Deployment controller
+// reached the fully rolled-out steady state: all pods updated, ready, no surge.
+func expectMinReadyE2EDeploymentFinalState(namespace string, desired int32) {
+	Eventually(func() bool {
+		deployment := &apps.Deployment{}
+		key := types.NamespacedName{Namespace: namespace, Name: minReadyE2EDeploymentName}
+		Expect(k8sClient.Get(context.TODO(), key, deployment)).Should(Succeed())
+		return deployment.Status.UpdatedReplicas == desired &&
+			deployment.Status.ReadyReplicas == desired &&
+			deployment.Status.Replicas == desired
+	}, 5*time.Minute, time.Second).Should(BeTrue(),
+		fmt.Sprintf("final state not reached: want Updated/Ready/Replicas=%d", desired))
+}

@@ -242,7 +242,7 @@ func (h *WorkloadHandler) handleDeployment(newObj, oldObj *apps.Deployment) (boo
 		modified := false
 		if isMinReadySecondsStrategy(rollout, newObj) {
 			if isEffectiveDeploymentRevisionChange(oldObj, newObj) {
-				if err := enrollMinReadyDeployment(newObj); err != nil {
+				if err := enrollMinReadyDeploymentWithPrevious(newObj, oldObj); err != nil {
 					klog.Warningf("Skip MinReady continuous enrollment for Deployment(%s/%s): %v", newObj.Namespace, newObj.Name, err)
 					return enforceMinReadyInflation(newObj), nil
 				}
@@ -485,8 +485,8 @@ func isEffectiveDeploymentRevisionChange(oldObj, newObj *apps.Deployment) bool {
 // the same time: the validating webhook rejects that combination
 // (pkg/webhook/rollout/validating/rollout_create_update_handler.go,
 // "Canary and BlueGreen cannot both be set"). When the feature gate is disabled
-// mid-rollout, the DeploymentStrategyAnnotation keeps this symmetric with the
-// executor's MinReady annotation fallback.
+// mid-rollout, the original MinReady annotations keep this symmetric with the
+// executor's annotation fallback.
 func isMinReadySecondsStrategy(rollout *appsv1beta1.Rollout, deployment *apps.Deployment) bool {
 	if rollout.Spec.Strategy.Canary == nil || rollout.Spec.Strategy.Canary.EnableExtraWorkloadForCanary {
 		return false
@@ -494,8 +494,7 @@ func isMinReadySecondsStrategy(rollout *appsv1beta1.Rollout, deployment *apps.De
 	if utilfeature.DefaultFeatureGate.Enabled(feature.MinReadySecondsStrategy) {
 		return true
 	}
-	strategy := util.GetDeploymentStrategy(deployment)
-	return strings.EqualFold(string(strategy.RollingStyle), string(appsv1alpha1.PartitionRollingStyle))
+	return appsv1beta1.HasMinReadyOriginalAnnotations(deployment.Annotations)
 }
 
 func enforceMinReadyInflation(deployment *apps.Deployment) bool {
@@ -504,9 +503,10 @@ func enforceMinReadyInflation(deployment *apps.Deployment) bool {
 	}
 	modified := false
 	// The MinReady strategy relies on the native RollingUpdate controller staying
-	// active and driven by inflated fields. Re-assert the core invariants here so a
-	// GitOps/manual write of Recreate or paused=true is rejected at admission time
-	// rather than only surfacing as a controller-side degraded condition later.
+	// active and driven by inflated availability fields. Re-assert the core
+	// invariants here so a GitOps/manual write of Recreate or paused=true is
+	// rejected at admission time rather than only surfacing as a controller-side
+	// degraded condition later.
 	if deployment.Spec.Strategy.Type != apps.RollingUpdateDeploymentStrategyType {
 		deployment.Spec.Strategy.Type = apps.RollingUpdateDeploymentStrategyType
 		modified = true
@@ -516,9 +516,12 @@ func enforceMinReadyInflation(deployment *apps.Deployment) bool {
 		modified = true
 	}
 	if deployment.Spec.Strategy.RollingUpdate == nil {
-		deployment.Spec.Strategy.RollingUpdate = &apps.RollingUpdateDeployment{}
+		maxUnavailable := intstr.FromInt(0)
+		deployment.Spec.Strategy.RollingUpdate = &apps.RollingUpdateDeployment{MaxUnavailable: &maxUnavailable}
 		modified = true
 	}
+	// MaxUnavailable is controller-owned after enrollment; resetting a non-nil
+	// value here would roll back the MinReady sliding window advancement.
 	if deployment.Spec.MinReadySeconds != inflatedMinReadySeconds {
 		deployment.Spec.MinReadySeconds = inflatedMinReadySeconds
 		modified = true

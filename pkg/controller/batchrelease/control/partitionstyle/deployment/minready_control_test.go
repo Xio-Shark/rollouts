@@ -77,7 +77,7 @@ func TestMinReadyInitializeIsIdempotentAndDoesNotOverwriteAnnotations(t *testing
 	assertMinReadyInflated(t, got)
 }
 
-func TestMinReadyInitializeRejectsGitOpsDrift(t *testing.T) {
+func TestMinReadyInitializeRefreshesExistingOriginalAnnotations(t *testing.T) {
 	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
 	deployment := newMinReadyDeployment()
 	deployment.Annotations = map[string]string{
@@ -85,11 +85,37 @@ func TestMinReadyInitializeRejectsGitOpsDrift(t *testing.T) {
 		AnnotationOriginalProgressDeadlineSeconds: "30",
 		AnnotationOriginalMaxUnavailable:          "10%",
 	}
+	deployment.Spec.Paused = false
+	maxUnavailable := intstr.FromInt(2)
+	deployment.Spec.Strategy.RollingUpdate.MaxUnavailable = &maxUnavailable
+	control := newBuiltMinReadyControl(t, deployment)
+
+	if err := control.Initialize(context.Background(), releaseDemo.DeepCopy()); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	got := fetchMinReadyDeployment(t, control)
+	assertAnnotation(t, got.Annotations, AnnotationOriginalMinReadySeconds, "7")
+	assertAnnotation(t, got.Annotations, AnnotationOriginalProgressDeadlineSeconds, "60")
+	assertAnnotation(t, got.Annotations, AnnotationOriginalMaxUnavailable, "2")
+	assertMinReadyInflated(t, got)
+}
+
+func TestMinReadyInitializeRejectsUnrefreshableGitOpsDrift(t *testing.T) {
+	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
+	deployment := newMinReadyDeployment()
+	deployment.Annotations = map[string]string{
+		AnnotationOriginalMinReadySeconds:         "5",
+		AnnotationOriginalProgressDeadlineSeconds: "30",
+		AnnotationOriginalMaxUnavailable:          "10%",
+	}
+	deployment.Spec.Paused = false
+	deployment.Spec.Strategy.RollingUpdate = nil
 	control := newBuiltMinReadyControl(t, deployment)
 
 	err := control.Initialize(context.Background(), releaseDemo.DeepCopy())
-	if err == nil || !strings.Contains(err.Error(), EventDegradedDriftDetected) {
-		t.Fatalf("Initialize error = %v, want drift detected", err)
+	if err == nil || !strings.Contains(err.Error(), "rollingUpdate is nil") {
+		t.Fatalf("Initialize error = %v, want rollingUpdate drift error", err)
 	}
 }
 
@@ -592,10 +618,11 @@ func TestMinReadySlidingWindowReachesSmallTargetInOneStep(t *testing.T) {
 	}
 }
 
-func TestMinReadySlidingWindowStepZeroDrivesBatchDirectly(t *testing.T) {
+func TestMinReadySlidingWindowStepZeroAdvancesWithReadySurgePods(t *testing.T) {
 	// P0-3: original maxUnavailable=0 means the user relies on maxSurge for
-	// concurrency control, so there is no budget to slide; the batch target is
-	// driven directly to preserve the existing surge-gated behavior.
+	// the first new pod. After that surge-created updated pod satisfies the
+	// original minReadySeconds, maxUnavailable advances one pod at a time instead
+	// of jumping straight to the batch target.
 	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
 	deployment := newInflatedMinReadyDeployment()
 	deployment.Annotations = map[string]string{
@@ -613,7 +640,21 @@ func TestMinReadySlidingWindowStepZeroDrivesBatchDirectly(t *testing.T) {
 	if err := control.ReconcileMaxUnavailableDrift(context.Background(), ctx); err != nil {
 		t.Fatalf("drift reconcile failed: %v", err)
 	}
-	if v := minReadyMaxUnavailableValue(t, fetchMinReadyDeployment(t, control), 10); v != 5 {
-		t.Fatalf("maxUnavailable = %d, want 5 (step=0 drives batch directly)", v)
+	if v := minReadyMaxUnavailableValue(t, fetchMinReadyDeployment(t, control), 10); v != 0 {
+		t.Fatalf("maxUnavailable = %d, want 0 before surge pod is ready", v)
+	}
+
+	for ready := int32(1); ready <= 6; ready++ {
+		ctx.UpdatedReadyReplicas = ready
+		if err := control.ReconcileMaxUnavailableDrift(context.Background(), ctx); err != nil {
+			t.Fatalf("ready=%d: drift reconcile failed: %v", ready, err)
+		}
+		want := int(ready)
+		if want > int(ctx.DesiredUpdatedReplicas) {
+			want = int(ctx.DesiredUpdatedReplicas)
+		}
+		if v := minReadyMaxUnavailableValue(t, fetchMinReadyDeployment(t, control), 10); v != want {
+			t.Fatalf("ready=%d: maxUnavailable = %d, want %d", ready, v, want)
+		}
 	}
 }

@@ -70,6 +70,23 @@ func TestEnrollMinReadyDeploymentRefreshesAvailabilityAnnotationsForContinuousRe
 	assertWebhookMinReadyInflated(t, deployment)
 }
 
+func TestEnrollMinReadyDeploymentRefreshesMaxUnavailableWhenPreviousDiffers(t *testing.T) {
+	previous := newWebhookInflatedMinReadyDeployment()
+	addWebhookMinReadyOriginalAnnotations(previous)
+	deployment := previous.DeepCopy()
+	maxUnavailable := intstr.FromInt(2)
+	deployment.Spec.Strategy.RollingUpdate.MaxUnavailable = &maxUnavailable
+
+	if err := enrollMinReadyDeploymentWithPrevious(deployment, previous); err != nil {
+		t.Fatalf("enrollMinReadyDeployment failed: %v", err)
+	}
+
+	assertWebhookMinReadyAnnotation(t, deployment, appsv1beta1.MinReadyOriginalMinReadySecondsAnnotation, "7")
+	assertWebhookMinReadyAnnotation(t, deployment, appsv1beta1.MinReadyOriginalProgressDeadlineSecondsAnnotation, "60")
+	assertWebhookMinReadyAnnotation(t, deployment, appsv1beta1.MinReadyOriginalMaxUnavailableAnnotation, "2")
+	assertWebhookMinReadyInflated(t, deployment)
+}
+
 func TestEnrollMinReadyDeploymentRejectsRecreate(t *testing.T) {
 	deployment := newWebhookMinReadyDeployment()
 	deployment.Spec.Strategy.Type = apps.RecreateDeploymentStrategyType

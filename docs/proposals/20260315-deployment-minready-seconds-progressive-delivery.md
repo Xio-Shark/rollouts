@@ -181,7 +181,7 @@ graph TB
 **Module dependencies**:
 
 - `MinReadyControl` embeds `*realController` (the existing Recreate-mode controller); the inherited methods `GetWorkloadInfo`, `ListOwnedPods`, and `BuildController` are reused as-is. Only `Initialize`, `UpgradeBatch`, `CalculateBatchContext`, and `Finalize` are overridden.
-- No new Go packages are introduced. All new source files live in existing directories (`pkg/controller/batchrelease/control/partitionstyle/deployment/` and `pkg/controller/batchrelease/control/partitionstyle/`), preserving the established architectural boundaries. The single exception is the metrics package (introduced only if observability is implemented as a follow-up).
+- Shared MinReady helpers live in `pkg/util/minready`; controller-specific code remains under `pkg/controller/batchrelease/control/partitionstyle/`, and webhook code calls the shared helpers instead of maintaining duplicate parsing/inflation logic.
 
 #### API Compatibility
 
@@ -592,8 +592,8 @@ Users opt in by enabling the feature gate on the kruise-rollout controller.
 ## Additional Details
 
 - **Test plan**: Unit tests cover all four overridden methods with a focus on idempotency, GitOps drift detection, and the Finalize validation matrix. Integration tests using `envtest` exercise the full Initialize → UpgradeBatch → Finalize cycle. End-to-end tests on a real `kind` cluster cover five core scenarios: normal multi-batch rollout, mid-rollout rollback, controller restart recovery, HPA coexistence, and Rollout CR deletion mid-rollout.
-- **Observability** (planned as a follow-up): four status conditions (`MinReadyInitialized` / `MinReadyBatching` / `MinReadyDegraded` / `MinReadyFinalized`), eight event reasons for normal and degraded transitions, and four Prometheus metrics (batch totals, batch duration histogram, stuck-time gauge, degraded counter). These are not required for the alpha phase but the contract and naming are reserved.
-- **No new Go packages are introduced**. All new files live in existing package directories.
+- **Observability**: four status conditions (`MinReadyInitialized` / `MinReadyBatching` / `MinReadyDegraded` / `MinReadyFinalized`) and four Prometheus metrics (batch totals, batch duration histogram, stuck-time gauge, degraded counter). Repeated batching details are kept as conditions/metrics rather than repeated normal events.
+- **Shared helpers**: Deployment MinReady annotation parsing and inflated-strategy helpers live in `pkg/util/minready` so webhook and controller paths use the same implementation.
 
 ## Implementation History
 

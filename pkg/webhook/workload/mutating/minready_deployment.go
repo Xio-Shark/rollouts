@@ -17,37 +17,37 @@ limitations under the License.
 package mutating
 
 import (
-	"fmt"
-	"strconv"
-	"strings"
-
 	apps "k8s.io/api/apps/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 
 	appsv1beta1 "github.com/openkruise/rollouts/api/v1beta1"
+	minreadyutil "github.com/openkruise/rollouts/pkg/util/minready"
 )
 
 const (
-	inflatedMinReadySeconds         int32 = appsv1beta1.MaxReadySeconds
-	inflatedProgressDeadlineSeconds int32 = appsv1beta1.MaxProgressSeconds
+	inflatedMinReadySeconds         int32 = minreadyutil.InflatedMinReadySeconds
+	inflatedProgressDeadlineSeconds int32 = minreadyutil.InflatedProgressDeadlineSeconds
 )
 
 // enrollMinReadyDeployment snapshots the original strategy fields into
 // annotations and inflates them in place. It lives in the webhook package so
 // admission code does not depend on controller internals.
 func enrollMinReadyDeployment(deployment *apps.Deployment) error {
+	return enrollMinReadyDeploymentWithPrevious(deployment, nil)
+}
+
+func enrollMinReadyDeploymentWithPrevious(deployment, previous *apps.Deployment) error {
 	if err := validateMinReadyDeploymentStrategyType(deployment); err != nil {
 		return err
 	}
 	snapshot := deployment.DeepCopy()
-	if err := enrollMinReadyOriginalAnnotations(snapshot, deployment); err != nil {
+	if err := enrollMinReadyOriginalAnnotations(snapshot, deployment, previous); err != nil {
 		return err
 	}
 	inflateMinReadyDeploymentStrategy(deployment)
 	return nil
 }
 
-func enrollMinReadyOriginalAnnotations(snapshot, target *apps.Deployment) error {
+func enrollMinReadyOriginalAnnotations(snapshot, target, previous *apps.Deployment) error {
 	if !appsv1beta1.HasMinReadyOriginalAnnotations(snapshot.Annotations) {
 		writeMinReadyOriginalAnnotations(snapshot, target)
 		return nil
@@ -64,153 +64,58 @@ func enrollMinReadyOriginalAnnotations(snapshot, target *apps.Deployment) error 
 		}
 		writeMinReadyOriginalAvailabilityAnnotations(snapshot, target)
 	}
+	if hasMinReadyOriginalMaxUnavailableChange(snapshot, previous) {
+		if err := validateMinReadyRefreshableDeployment(snapshot); err != nil {
+			return err
+		}
+		writeMinReadyOriginalMaxUnavailableAnnotation(snapshot, target)
+	}
 	return nil
 }
 
 func writeMinReadyOriginalAnnotations(original, modified *apps.Deployment) {
-	writeMinReadyOriginalAvailabilityAnnotations(original, modified)
-	modified.Annotations[appsv1beta1.MinReadyOriginalMaxUnavailableAnnotation] =
-		serializeMinReadyOriginalIntOrString(originalMinReadyMaxUnavailable(original))
+	minreadyutil.WriteOriginalAnnotations(original, modified)
 }
 
 func writeMinReadyOriginalAvailabilityAnnotations(original, modified *apps.Deployment) {
-	if modified.Annotations == nil {
-		modified.Annotations = map[string]string{}
-	}
-	modified.Annotations[appsv1beta1.MinReadyOriginalMinReadySecondsAnnotation] =
-		serializeMinReadyOriginalInt32(&original.Spec.MinReadySeconds, 0)
-	modified.Annotations[appsv1beta1.MinReadyOriginalProgressDeadlineSecondsAnnotation] =
-		serializeMinReadyOriginalInt32(original.Spec.ProgressDeadlineSeconds, appsv1beta1.MinReadyDefaultProgressDeadlineSeconds)
+	minreadyutil.WriteOriginalAvailabilityAnnotations(original, modified)
 }
 
-func serializeMinReadyOriginalInt32(value *int32, defaultValue int32) string {
-	if value == nil {
-		return strconv.FormatInt(int64(defaultValue), 10)
-	}
-	return strconv.FormatInt(int64(*value), 10)
-}
-
-func serializeMinReadyOriginalIntOrString(value *intstr.IntOrString) string {
-	if value == nil {
-		return appsv1beta1.MinReadyDefaultMaxUnavailable
-	}
-	if value.Type == intstr.String {
-		return value.StrVal
-	}
-	return strconv.FormatInt(int64(value.IntVal), 10)
-}
-
-func originalMinReadyMaxUnavailable(deployment *apps.Deployment) *intstr.IntOrString {
-	if deployment.Spec.Strategy.RollingUpdate == nil {
-		return nil
-	}
-	return deployment.Spec.Strategy.RollingUpdate.MaxUnavailable
+func writeMinReadyOriginalMaxUnavailableAnnotation(original, modified *apps.Deployment) {
+	minreadyutil.WriteOriginalMaxUnavailableAnnotation(original, modified)
 }
 
 func ensureMinReadyOriginalAnnotations(deployment *apps.Deployment) error {
-	if _, err := parseMinReadyOriginalInt32(deployment.Annotations, appsv1beta1.MinReadyOriginalMinReadySecondsAnnotation); err != nil {
-		return err
-	}
-	if _, err := parseMinReadyOriginalInt32(deployment.Annotations, appsv1beta1.MinReadyOriginalProgressDeadlineSecondsAnnotation); err != nil {
-		return err
-	}
-	if _, err := parseMinReadyOriginalIntOrString(deployment.Annotations, appsv1beta1.MinReadyOriginalMaxUnavailableAnnotation); err != nil {
-		return err
-	}
-	return nil
-}
-
-func parseMinReadyOriginalInt32(annotations map[string]string, key string) (*int32, error) {
-	raw, ok := annotations[key]
-	if !ok {
-		return nil, fmt.Errorf("annotation %s missing", key)
-	}
-	if raw == "" {
-		return nil, fmt.Errorf("annotation %s present but empty", key)
-	}
-	n, err := strconv.ParseInt(raw, 10, 32)
-	if err != nil {
-		return nil, fmt.Errorf("annotation %s malformed int32: %v", key, err)
-	}
-	v := int32(n)
-	return &v, nil
-}
-
-func parseMinReadyOriginalIntOrString(annotations map[string]string, key string) (*intstr.IntOrString, error) {
-	raw, ok := annotations[key]
-	if !ok {
-		return nil, fmt.Errorf("annotation %s missing", key)
-	}
-	if raw == "" {
-		return nil, fmt.Errorf("annotation %s present but empty", key)
-	}
-	if strings.HasSuffix(raw, "%") {
-		if _, err := strconv.Atoi(strings.TrimSuffix(raw, "%")); err != nil {
-			return nil, fmt.Errorf("annotation %s malformed percent: %v", key, err)
-		}
-		v := intstr.FromString(raw)
-		return &v, nil
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil {
-		return nil, fmt.Errorf("annotation %s malformed int: %v", key, err)
-	}
-	v := intstr.FromInt(n)
-	return &v, nil
+	return minreadyutil.ValidateOriginalAnnotations(deployment.Annotations)
 }
 
 func inflateMinReadyDeploymentStrategy(deployment *apps.Deployment) {
-	progressDeadlineSeconds := inflatedProgressDeadlineSeconds
-	maxUnavailable := intstr.FromInt(0)
-	deployment.Spec.Paused = false
-	deployment.Spec.MinReadySeconds = inflatedMinReadySeconds
-	deployment.Spec.ProgressDeadlineSeconds = &progressDeadlineSeconds
-	if deployment.Spec.Strategy.RollingUpdate == nil {
-		deployment.Spec.Strategy.RollingUpdate = &apps.RollingUpdateDeployment{}
-	}
-	deployment.Spec.Strategy.RollingUpdate.MaxUnavailable = &maxUnavailable
+	minreadyutil.InflateDeploymentStrategy(deployment)
 }
 
 func validateMinReadyInflatedDeploymentStrategy(deployment *apps.Deployment) error {
-	if err := validateMinReadyDeploymentStrategyType(deployment); err != nil {
-		return err
-	}
-	if deployment.Spec.Paused {
-		return fmt.Errorf("deployment is paused")
-	}
-	if deployment.Spec.MinReadySeconds != inflatedMinReadySeconds {
-		return fmt.Errorf("minReadySeconds=%d want %d", deployment.Spec.MinReadySeconds, inflatedMinReadySeconds)
-	}
-	if deployment.Spec.ProgressDeadlineSeconds == nil || *deployment.Spec.ProgressDeadlineSeconds != inflatedProgressDeadlineSeconds {
-		return fmt.Errorf("progressDeadlineSeconds=%v want %d", deployment.Spec.ProgressDeadlineSeconds, inflatedProgressDeadlineSeconds)
-	}
-	if deployment.Spec.Strategy.RollingUpdate == nil {
-		return fmt.Errorf("rollingUpdate is nil")
-	}
-	return nil
+	return minreadyutil.ValidateInflatedDeploymentStrategy(deployment)
 }
 
 func hasMinReadyOriginalAvailabilityChange(deployment *apps.Deployment) bool {
-	if deployment.Spec.MinReadySeconds != inflatedMinReadySeconds {
-		return true
+	return minreadyutil.HasOriginalAvailabilityChange(deployment)
+}
+
+func hasMinReadyOriginalMaxUnavailableChange(deployment, previous *apps.Deployment) bool {
+	if previous == nil {
+		return false
 	}
-	return deployment.Spec.ProgressDeadlineSeconds == nil ||
-		*deployment.Spec.ProgressDeadlineSeconds != inflatedProgressDeadlineSeconds
+	current := minreadyutil.SerializeOriginalIntOrString(
+		minreadyutil.OriginalMaxUnavailable(deployment), minreadyutil.DefaultMaxUnavailable)
+	old := minreadyutil.SerializeOriginalIntOrString(
+		minreadyutil.OriginalMaxUnavailable(previous), minreadyutil.DefaultMaxUnavailable)
+	return current != old
 }
 
 func validateMinReadyRefreshableDeployment(deployment *apps.Deployment) error {
-	if deployment.Spec.Paused {
-		return fmt.Errorf("deployment is paused")
-	}
-	if deployment.Spec.Strategy.RollingUpdate == nil {
-		return fmt.Errorf("rollingUpdate is nil")
-	}
-	return nil
+	return minreadyutil.ValidateRefreshableDeployment(deployment)
 }
 
 func validateMinReadyDeploymentStrategyType(deployment *apps.Deployment) error {
-	if deployment.Spec.Strategy.Type != apps.RollingUpdateDeploymentStrategyType {
-		return fmt.Errorf("deployment strategy type %s is not RollingUpdate", deployment.Spec.Strategy.Type)
-	}
-	return nil
+	return minreadyutil.ValidateDeploymentStrategyType(deployment)
 }

@@ -68,9 +68,9 @@ func nonNilContext(ctx context.Context) context.Context {
 	return context.Background()
 }
 
-func (rc *realBatchControlPlane) bindMinReadyStatus(controller Interface) {
-	if binder, ok := controller.(MinReadyStatusBinder); ok {
-		binder.BindMinReadyStatus(rc.release, rc.newStatus, rc.EventRecorder)
+func (rc *realBatchControlPlane) bindStrategyStatus(controller Interface) {
+	if binder, ok := controller.(StrategyStatusBinder); ok {
+		binder.BindStrategyStatus(rc.release, rc.newStatus, rc.EventRecorder)
 	}
 }
 
@@ -78,7 +78,7 @@ func (rc *realBatchControlPlane) reportOperationFailed(controller Interface, rea
 	if err == nil {
 		return
 	}
-	if lifecycle, ok := controller.(MinReadyLifecycle); ok {
+	if lifecycle, ok := controller.(StrategyLifecycle); ok {
 		lifecycle.RecordOperationFailed(reason, err)
 		return
 	}
@@ -97,7 +97,7 @@ func (rc *realBatchControlPlane) Initialize() (err error) {
 		reportErr = err
 		return err
 	}
-	rc.bindMinReadyStatus(controller)
+	rc.bindStrategyStatus(controller)
 
 	// claim workload under our control
 	err = controller.Initialize(rc.ctx, rc.release)
@@ -105,7 +105,7 @@ func (rc *realBatchControlPlane) Initialize() (err error) {
 		reportErr = err
 		return err
 	}
-	if lifecycle, ok := controller.(MinReadyLifecycle); ok {
+	if lifecycle, ok := controller.(StrategyLifecycle); ok {
 		lifecycle.RecordInitialized()
 	}
 
@@ -135,10 +135,10 @@ func (rc *realBatchControlPlane) UpgradeBatch() (err error) {
 		reportErr = err
 		return err
 	}
-	rc.bindMinReadyStatus(controller)
+	rc.bindStrategyStatus(controller)
 
 	if controller.GetWorkloadInfo().Replicas == 0 {
-		if lifecycle, ok := controller.(MinReadyLifecycle); ok {
+		if lifecycle, ok := controller.(StrategyLifecycle); ok {
 			lifecycle.RecordZeroReplicaBatching()
 		}
 		return nil
@@ -168,7 +168,7 @@ func (rc *realBatchControlPlane) UpgradeBatch() (err error) {
 		reportErr = err
 		return err
 	}
-	if lifecycle, ok := controller.(MinReadyLifecycle); ok {
+	if lifecycle, ok := controller.(StrategyLifecycle); ok {
 		lifecycle.RecordBatchAdvanced()
 	}
 	return nil
@@ -186,10 +186,10 @@ func (rc *realBatchControlPlane) EnsureBatchPodsReadyAndLabeled() (err error) {
 		reportErr = err
 		return err
 	}
-	rc.bindMinReadyStatus(controller)
+	rc.bindStrategyStatus(controller)
 
 	if controller.GetWorkloadInfo().Replicas == 0 {
-		if lifecycle, ok := controller.(MinReadyLifecycle); ok {
+		if lifecycle, ok := controller.(StrategyLifecycle); ok {
 			lifecycle.RecordZeroReplicaBatchReady()
 		}
 		return nil
@@ -214,12 +214,12 @@ func (rc *realBatchControlPlane) EnsureBatchPodsReadyAndLabeled() (err error) {
 	}
 
 	if err := batchContext.IsBatchReady(); err != nil {
-		if lifecycle, ok := controller.(MinReadyLifecycle); ok {
+		if lifecycle, ok := controller.(StrategyLifecycle); ok {
 			lifecycle.ObserveBatchWait()
 		}
 		return err
 	}
-	if lifecycle, ok := controller.(MinReadyLifecycle); ok {
+	if lifecycle, ok := controller.(StrategyLifecycle); ok {
 		lifecycle.RecordBatchReady()
 	}
 	return nil
@@ -240,14 +240,14 @@ func (rc *realBatchControlPlane) Finalize() (err error) {
 		}
 		return nil
 	}
-	rc.bindMinReadyStatus(controller)
+	rc.bindStrategyStatus(controller)
 
 	// release workload control info and clean up resources if it needs
 	if err := controller.Finalize(rc.ctx, rc.release); err != nil {
 		reportErr = err
 		return err
 	}
-	if lifecycle, ok := controller.(MinReadyLifecycle); ok {
+	if lifecycle, ok := controller.(StrategyLifecycle); ok {
 		lifecycle.RecordFinalized()
 	}
 	return nil

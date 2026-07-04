@@ -694,6 +694,151 @@ func TestHandlerDeployment(t *testing.T) {
 			},
 		},
 		{
+			name: "minready continuous release refreshes original maxUnavailable annotation",
+			getObjs: func() (*apps.Deployment, *apps.Deployment) {
+				oldObj := deploymentDemo.DeepCopy()
+				oldObj.Spec.Template.Spec.Containers[0].Image = "echoserver:v2"
+				oldObj.Annotations[util.InRolloutProgressingAnnotation] = `{"rolloutName":"rollout-demo","RolloutDone":false}`
+				oldObj.Annotations[appsv1beta1.MinReadyOriginalMinReadySecondsAnnotation] = "7"
+				oldObj.Annotations[appsv1beta1.MinReadyOriginalProgressDeadlineSecondsAnnotation] = "60"
+				oldObj.Annotations[appsv1beta1.MinReadyOriginalMaxUnavailableAnnotation] = "25%"
+				oldObj.Spec.Paused = false
+				oldObj.Spec.Strategy.Type = apps.RollingUpdateDeploymentStrategyType
+				maxUnavailable := intstr.FromInt(0)
+				oldObj.Spec.Strategy.RollingUpdate = &apps.RollingUpdateDeployment{MaxUnavailable: &maxUnavailable}
+				oldObj.Spec.MinReadySeconds = inflatedMinReadySeconds
+				inflatedPDS := inflatedProgressDeadlineSeconds
+				oldObj.Spec.ProgressDeadlineSeconds = &inflatedPDS
+
+				newObj := oldObj.DeepCopy()
+				newObj.Spec.Template.Spec.Containers[0].Image = "echoserver:v3"
+				newMaxUnavailable := intstr.FromInt(2)
+				newObj.Spec.Strategy.RollingUpdate.MaxUnavailable = &newMaxUnavailable
+				return oldObj, newObj
+			},
+			expectObj: func() *apps.Deployment {
+				obj := deploymentDemo.DeepCopy()
+				obj.Spec.Template.Spec.Containers[0].Image = "echoserver:v3"
+				obj.Annotations[util.InRolloutProgressingAnnotation] = `{"rolloutName":"rollout-demo","RolloutDone":false}`
+				obj.Annotations[appsv1beta1.MinReadyOriginalMinReadySecondsAnnotation] = "7"
+				obj.Annotations[appsv1beta1.MinReadyOriginalProgressDeadlineSecondsAnnotation] = "60"
+				obj.Annotations[appsv1beta1.MinReadyOriginalMaxUnavailableAnnotation] = "2"
+				obj.Spec.Paused = false
+				obj.Spec.Strategy.Type = apps.RollingUpdateDeploymentStrategyType
+				maxUnavailable := intstr.FromInt(0)
+				obj.Spec.Strategy.RollingUpdate = &apps.RollingUpdateDeployment{MaxUnavailable: &maxUnavailable}
+				obj.Spec.MinReadySeconds = inflatedMinReadySeconds
+				inflatedPDS := inflatedProgressDeadlineSeconds
+				obj.Spec.ProgressDeadlineSeconds = &inflatedPDS
+				return obj
+			},
+			getRs: func() []*apps.ReplicaSet {
+				rs := rsDemo.DeepCopy()
+				return []*apps.ReplicaSet{rs}
+			},
+			getRollout: func() *appsv1beta1.Rollout {
+				_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
+				return rolloutDemo.DeepCopy()
+			},
+		},
+		{
+			name: "minready controller maxUnavailable advancement is preserved",
+			getObjs: func() (*apps.Deployment, *apps.Deployment) {
+				oldObj := deploymentDemo.DeepCopy()
+				oldObj.Spec.Template.Spec.Containers[0].Image = "echoserver:v2"
+				oldObj.Annotations[util.InRolloutProgressingAnnotation] = `{"rolloutName":"rollout-demo","RolloutDone":false}`
+				oldObj.Annotations[appsv1beta1.MinReadyOriginalMinReadySecondsAnnotation] = "7"
+				oldObj.Annotations[appsv1beta1.MinReadyOriginalProgressDeadlineSecondsAnnotation] = "60"
+				oldObj.Annotations[appsv1beta1.MinReadyOriginalMaxUnavailableAnnotation] = "25%"
+				oldObj.Spec.Paused = false
+				oldObj.Spec.Strategy.Type = apps.RollingUpdateDeploymentStrategyType
+				maxUnavailable := intstr.FromInt(0)
+				oldObj.Spec.Strategy.RollingUpdate = &apps.RollingUpdateDeployment{MaxUnavailable: &maxUnavailable}
+				oldObj.Spec.MinReadySeconds = inflatedMinReadySeconds
+				inflatedPDS := inflatedProgressDeadlineSeconds
+				oldObj.Spec.ProgressDeadlineSeconds = &inflatedPDS
+
+				newObj := oldObj.DeepCopy()
+				nextMaxUnavailable := intstr.FromInt(1)
+				newObj.Spec.Strategy.RollingUpdate.MaxUnavailable = &nextMaxUnavailable
+				return oldObj, newObj
+			},
+			expectObj: func() *apps.Deployment {
+				obj := deploymentDemo.DeepCopy()
+				obj.Spec.Template.Spec.Containers[0].Image = "echoserver:v2"
+				obj.Annotations[util.InRolloutProgressingAnnotation] = `{"rolloutName":"rollout-demo","RolloutDone":false}`
+				obj.Annotations[appsv1beta1.MinReadyOriginalMinReadySecondsAnnotation] = "7"
+				obj.Annotations[appsv1beta1.MinReadyOriginalProgressDeadlineSecondsAnnotation] = "60"
+				obj.Annotations[appsv1beta1.MinReadyOriginalMaxUnavailableAnnotation] = "25%"
+				obj.Spec.Paused = false
+				obj.Spec.Strategy.Type = apps.RollingUpdateDeploymentStrategyType
+				maxUnavailable := intstr.FromInt(1)
+				obj.Spec.Strategy.RollingUpdate = &apps.RollingUpdateDeployment{MaxUnavailable: &maxUnavailable}
+				obj.Spec.MinReadySeconds = inflatedMinReadySeconds
+				inflatedPDS := inflatedProgressDeadlineSeconds
+				obj.Spec.ProgressDeadlineSeconds = &inflatedPDS
+				return obj
+			},
+			getRs: func() []*apps.ReplicaSet {
+				rs := rsDemo.DeepCopy()
+				return []*apps.ReplicaSet{rs}
+			},
+			getRollout: func() *appsv1beta1.Rollout {
+				_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
+				return rolloutDemo.DeepCopy()
+			},
+		},
+		{
+			name: "minready progressing deployment keeps minready flow after feature gate disabled",
+			getObjs: func() (*apps.Deployment, *apps.Deployment) {
+				oldObj := deploymentDemo.DeepCopy()
+				oldObj.Spec.Template.Spec.Containers[0].Image = "echoserver:v2"
+				oldObj.Annotations[util.InRolloutProgressingAnnotation] = `{"rolloutName":"rollout-demo","RolloutDone":false}`
+				oldObj.Annotations[appsv1beta1.MinReadyOriginalMinReadySecondsAnnotation] = "7"
+				oldObj.Annotations[appsv1beta1.MinReadyOriginalProgressDeadlineSecondsAnnotation] = "60"
+				oldObj.Annotations[appsv1beta1.MinReadyOriginalMaxUnavailableAnnotation] = "25%"
+				oldObj.Spec.Paused = false
+				oldObj.Spec.Strategy.Type = apps.RollingUpdateDeploymentStrategyType
+				maxUnavailable := intstr.FromInt(0)
+				oldObj.Spec.Strategy.RollingUpdate = &apps.RollingUpdateDeployment{MaxUnavailable: &maxUnavailable}
+				oldObj.Spec.MinReadySeconds = inflatedMinReadySeconds
+				inflatedPDS := inflatedProgressDeadlineSeconds
+				oldObj.Spec.ProgressDeadlineSeconds = &inflatedPDS
+
+				newObj := oldObj.DeepCopy()
+				newObj.Spec.Paused = true
+				newObj.Spec.Strategy.Type = apps.RecreateDeploymentStrategyType
+				newObj.Spec.Strategy.RollingUpdate = nil
+				newObj.Spec.MinReadySeconds = 3
+				newObj.Spec.ProgressDeadlineSeconds = pointer.Int32(30)
+				return oldObj, newObj
+			},
+			expectObj: func() *apps.Deployment {
+				obj := deploymentDemo.DeepCopy()
+				obj.Spec.Template.Spec.Containers[0].Image = "echoserver:v2"
+				obj.Annotations[util.InRolloutProgressingAnnotation] = `{"rolloutName":"rollout-demo","RolloutDone":false}`
+				obj.Annotations[appsv1beta1.MinReadyOriginalMinReadySecondsAnnotation] = "7"
+				obj.Annotations[appsv1beta1.MinReadyOriginalProgressDeadlineSecondsAnnotation] = "60"
+				obj.Annotations[appsv1beta1.MinReadyOriginalMaxUnavailableAnnotation] = "25%"
+				obj.Spec.Paused = false
+				obj.Spec.Strategy.Type = apps.RollingUpdateDeploymentStrategyType
+				maxUnavailable := intstr.FromInt(0)
+				obj.Spec.Strategy.RollingUpdate = &apps.RollingUpdateDeployment{MaxUnavailable: &maxUnavailable}
+				obj.Spec.MinReadySeconds = inflatedMinReadySeconds
+				inflatedPDS := inflatedProgressDeadlineSeconds
+				obj.Spec.ProgressDeadlineSeconds = &inflatedPDS
+				return obj
+			},
+			getRs: func() []*apps.ReplicaSet {
+				rs := rsDemo.DeepCopy()
+				return []*apps.ReplicaSet{rs}
+			},
+			getRollout: func() *appsv1beta1.Rollout {
+				_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=false")
+				return rolloutDemo.DeepCopy()
+			},
+		},
+		{
 			name: "set deployment paused = false, matched rollout, in finalising, allow",
 			getObjs: func() (*apps.Deployment, *apps.Deployment) {
 				oldObj := deploymentDemo.DeepCopy()
@@ -942,10 +1087,19 @@ func TestIsMinReadySecondsStrategy(t *testing.T) {
 		t.Fatalf("skip returned true while feature gate is disabled")
 	}
 	deployment.Annotations[appsv1alpha1.DeploymentStrategyAnnotation] = `{"rollingStyle":"Partition"}`
+	if isMinReadySecondsStrategy(rollout, deployment) {
+		t.Fatalf("skip returned true for legacy strategy annotation without MinReady original annotations")
+	}
+	deployment.Annotations[appsv1beta1.MinReadyOriginalMinReadySecondsAnnotation] = "0"
+	deployment.Annotations[appsv1beta1.MinReadyOriginalProgressDeadlineSecondsAnnotation] = "600"
+	deployment.Annotations[appsv1beta1.MinReadyOriginalMaxUnavailableAnnotation] = "25%"
 	if !isMinReadySecondsStrategy(rollout, deployment) {
-		t.Fatalf("skip returned false for in-progress MinReady Deployment with strategy annotation")
+		t.Fatalf("skip returned false for in-progress MinReady Deployment with original annotations")
 	}
 	delete(deployment.Annotations, appsv1alpha1.DeploymentStrategyAnnotation)
+	for _, key := range appsv1beta1.MinReadyOriginalAnnotations {
+		delete(deployment.Annotations, key)
+	}
 	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
 	if !isMinReadySecondsStrategy(rollout, deployment) {
 		t.Fatalf("skip returned false for MinReadySeconds with feature gate enabled")
@@ -983,8 +1137,9 @@ func inflatedMinReadyDeployment() *apps.Deployment {
 
 // TestEnforceMinReadyInflation covers P0-2: while a MinReady rollout is
 // progressing, the webhook must re-assert the core invariants (RollingUpdate,
-// unpaused, non-nil rollingUpdate, inflated fields) so a GitOps/manual drift is
-// rejected at admission time rather than only surfacing later in the controller.
+// unpaused, non-nil rollingUpdate, inflated availability fields) so a
+// GitOps/manual drift is rejected at admission time rather than only surfacing
+// later in the controller.
 func TestEnforceMinReadyInflation(t *testing.T) {
 	t.Run("no MinReady annotations leaves object untouched", func(t *testing.T) {
 		d := &apps.Deployment{Spec: apps.DeploymentSpec{Strategy: apps.DeploymentStrategy{Type: apps.RecreateDeploymentStrategyType}}}
@@ -1033,6 +1188,18 @@ func TestEnforceMinReadyInflation(t *testing.T) {
 		}
 		if d.Spec.Strategy.RollingUpdate == nil {
 			t.Fatalf("rollingUpdate not restored")
+		}
+	})
+
+	t.Run("controller-owned maxUnavailable advancement is preserved", func(t *testing.T) {
+		d := inflatedMinReadyDeployment()
+		maxUnavailable := intstr.FromInt(2)
+		d.Spec.Strategy.RollingUpdate.MaxUnavailable = &maxUnavailable
+		if enforceMinReadyInflation(d) {
+			t.Fatalf("expected no modification for maxUnavailable advancement")
+		}
+		if unavailable := d.Spec.Strategy.RollingUpdate.MaxUnavailable; unavailable == nil || unavailable.IntVal != 2 {
+			t.Fatalf("maxUnavailable not preserved: %v", unavailable)
 		}
 	})
 

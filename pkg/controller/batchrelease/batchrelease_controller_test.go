@@ -40,12 +40,16 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/pointer"
+	dto "github.com/prometheus/client_model/go"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	rolloutapi "github.com/openkruise/rollouts/api"
 	"github.com/openkruise/rollouts/api/v1beta1"
+	brmetrics "github.com/openkruise/rollouts/pkg/controller/batchrelease/metrics"
+	partitiondeployment "github.com/openkruise/rollouts/pkg/controller/batchrelease/control/partitionstyle/deployment"
 	"github.com/openkruise/rollouts/pkg/feature"
 	"github.com/openkruise/rollouts/pkg/util"
 	utilfeature "github.com/openkruise/rollouts/pkg/util/feature"
@@ -1176,4 +1180,147 @@ func makeStableReplicaSets(deploys ...client.Object) []client.Object {
 func getOldTime() *metav1.Time {
 	time, _ := time.Parse(TIME_LAYOUT, "2018-09-10 00:00:00")
 	return &metav1.Time{Time: time}
+}
+
+// TestMinReadyDeletionReconcileCleanupsMetricsAndRestoresDeployment drives the
+// full BatchReleaseReconciler deletion chain: Reconcile -> handleFinalizer ->
+// executor.Do -> isPlanFinalizing -> signalFinalizing -> Finalize ->
+// RecordFinalized -> DeleteMinReadyMetrics. The pre-existing unit test
+// TestDeleteMinReadyMetricsDeletesLabelValues only covers the metrics helper
+// directly, and TestDeploymentMinReadyControlPlaneDeletionTriggersFinalizeAndMetricsCleanup
+// calls control.Finalize() bypassing the reconciler. This test closes the gap
+// by exercising the real BatchReleaseReconciler.Reconcile path on a deleted
+// root resource.
+func TestMinReadyDeletionReconcileCleanupsMetricsAndRestoresDeployment(t *testing.T) {
+	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
+
+	// Build an inflated Deployment representing mid-rollout state.
+	deployment := stableDeploy.DeepCopy()
+	deployment.ResourceVersion = "1"
+	inflatedDeadline := partitiondeployment.InflatedProgressDeadlineSeconds
+	maxUnavailableZero := intstr.FromInt(0)
+	deployment.Spec.MinReadySeconds = partitiondeployment.InflatedMinReadySeconds
+	deployment.Spec.ProgressDeadlineSeconds = &inflatedDeadline
+	deployment.Spec.Strategy.RollingUpdate.MaxUnavailable = &maxUnavailableZero
+	if deployment.Annotations == nil {
+		deployment.Annotations = map[string]string{}
+	}
+	deployment.Annotations[partitiondeployment.AnnotationOriginalMinReadySeconds] = "5"
+	deployment.Annotations[partitiondeployment.AnnotationOriginalProgressDeadlineSeconds] = "60"
+	deployment.Annotations[partitiondeployment.AnnotationOriginalMaxUnavailable] = "2"
+
+	// BatchRelease being deleted mid-rollout: DeletionTimestamp set, finalizer
+	// present, Phase=Progressing so handleFinalizer can not remove the finalizer
+	// yet and the executor must drive Finalize first.
+	release := minReadyRelease()
+	release.Status.Phase = v1beta1.RolloutPhaseProgressing
+	release.Status.StableRevision = "stable"
+	release.Status.UpdateRevision = "updated"
+	release.Status.CanaryStatus.CurrentBatch = 0
+	release.Status.CanaryStatus.CurrentBatchState = v1beta1.ReadyBatchState
+	release.Status.ObservedWorkloadReplicas = 100
+	now := metav1.Now()
+	release.DeletionTimestamp = &now
+	release.Finalizers = []string{ReleaseFinalizer}
+
+	rec := record.NewFakeRecorder(100)
+	cli := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(release, deployment).
+		WithStatusSubresource(&v1beta1.BatchRelease{}).
+		Build()
+
+	// Pre-record metrics so we can verify the deletion reconcile chain cleans them up.
+	brmetrics.RecordMinReadyBatch(release, brmetrics.BatchResultSuccess)
+	brmetrics.RecordMinReadyDegraded(release, brmetrics.DegradedReasonControllerError)
+
+	reconciler := &BatchReleaseReconciler{
+		Client:   cli,
+		recorder: rec,
+		Scheme:   scheme,
+		executor: NewReleasePlanExecutor(cli, rec),
+	}
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(release)}
+
+	// Round 1: isPlanFinalizing (DeletionTimestamp != nil) signals Finalizing;
+	// status changes so the executor requeues before running Finalize.
+	if _, err := reconciler.Reconcile(context.TODO(), req); err != nil {
+		t.Fatalf("Reconcile round 1 failed: %v", err)
+	}
+	// Round 2: executeBatchReleasePlan runs Finalize, restores the Deployment,
+	// records MinReadyFinalized, deletes metrics, transitions Phase=Completed.
+	if _, err := reconciler.Reconcile(context.TODO(), req); err != nil {
+		t.Fatalf("Reconcile round 2 failed: %v", err)
+	}
+
+	// Verify Deployment original fields restored by the full chain.
+	got := &apps.Deployment{}
+	if err := cli.Get(context.TODO(), client.ObjectKeyFromObject(deployment), got); err != nil {
+		t.Fatalf("Get deployment failed: %v", err)
+	}
+	if got.Spec.MinReadySeconds != 5 {
+		t.Fatalf("minReadySeconds = %d, want 5 (original)", got.Spec.MinReadySeconds)
+	}
+	if got.Spec.ProgressDeadlineSeconds == nil || *got.Spec.ProgressDeadlineSeconds != 60 {
+		t.Fatalf("progressDeadlineSeconds = %v, want 60 (original)", got.Spec.ProgressDeadlineSeconds)
+	}
+	if u := got.Spec.Strategy.RollingUpdate.MaxUnavailable; u == nil || u.IntVal != 2 {
+		t.Fatalf("maxUnavailable = %v, want 2 (original)", u)
+	}
+	for _, key := range partitiondeployment.AllOriginalAnnotations {
+		if _, ok := got.Annotations[key]; ok {
+			t.Fatalf("annotation %s still exists after deletion reconcile", key)
+		}
+	}
+
+	// Verify BatchRelease reached Completed with MinReadyFinalized condition.
+	br := &v1beta1.BatchRelease{}
+	if err := cli.Get(context.TODO(), client.ObjectKeyFromObject(release), br); err != nil {
+		t.Fatalf("Get BatchRelease failed: %v", err)
+	}
+	if br.Status.Phase != v1beta1.RolloutPhaseCompleted {
+		t.Fatalf("Phase = %s, want Completed", br.Status.Phase)
+	}
+	found := false
+	for _, cond := range br.Status.Conditions {
+		if cond.Type == v1beta1.RolloutConditionMinReadyFinalized &&
+			cond.Status == corev1.ConditionTrue && cond.Reason == "MinReadyFinalized" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("MinReadyFinalized condition not found in %#v", br.Status.Conditions)
+	}
+
+	// Verify metrics cleaned up by the full deletion reconcile chain.
+	assertMinReadyMetricsAbsent(t, release.Name, release.Namespace)
+}
+
+func assertMinReadyMetricsAbsent(t *testing.T, name, namespace string) {
+	t.Helper()
+	families, err := metrics.Registry.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics failed: %v", err)
+	}
+	for _, family := range families {
+		for _, metric := range family.GetMetric() {
+			if minReadyMetricHasRelease(metric, name, namespace) {
+				t.Fatalf("metric %s for release %s/%s still exists after deletion reconcile",
+					family.GetName(), namespace, name)
+			}
+		}
+	}
+}
+
+func minReadyMetricHasRelease(metric *dto.Metric, name, namespace string) bool {
+	hasRollout := false
+	hasNamespace := false
+	for _, label := range metric.GetLabel() {
+		if label.GetName() == "rollout" && label.GetValue() == name {
+			hasRollout = true
+		}
+		if label.GetName() == "namespace" && label.GetValue() == namespace {
+			hasNamespace = true
+		}
+	}
+	return hasRollout && hasNamespace
 }

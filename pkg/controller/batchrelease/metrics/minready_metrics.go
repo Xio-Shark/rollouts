@@ -103,7 +103,7 @@ func ClearMinReadyStuckSeconds(release *v1beta1.BatchRelease, reason string) {
 	if release == nil {
 		return
 	}
-	minReadyStuckSeconds.WithLabelValues(release.Name, release.Namespace, reason).Set(0)
+	minReadyStuckSeconds.DeleteLabelValues(release.Name, release.Namespace, reason)
 }
 
 func RecordMinReadyDegraded(release *v1beta1.BatchRelease, reason string) {
@@ -111,4 +111,25 @@ func RecordMinReadyDegraded(release *v1beta1.BatchRelease, reason string) {
 		return
 	}
 	minReadyDegradedTotal.WithLabelValues(release.Name, release.Namespace, reason).Inc()
+}
+
+func DeleteMinReadyMetrics(release *v1beta1.BatchRelease) {
+	if release == nil {
+		return
+	}
+	for _, result := range []string{BatchResultSuccess, BatchResultStuck, BatchResultDegraded} {
+		minReadyBatchesTotal.DeleteLabelValues(release.Name, release.Namespace, result)
+	}
+	minReadyBatchDurationSeconds.DeleteLabelValues(release.Name, release.Namespace)
+	for _, reason := range []string{StuckReasonBatchReadyTimeout} {
+		minReadyStuckSeconds.DeleteLabelValues(release.Name, release.Namespace, reason)
+	}
+	for _, reason := range []string{
+		DegradedReasonControllerError,
+		DegradedReasonFeatureGateDisabled,
+		DegradedReasonGitOpsDrift,
+		DegradedReasonMissingAnnotations,
+	} {
+		minReadyDegradedTotal.DeleteLabelValues(release.Name, release.Namespace, reason)
+	}
 }

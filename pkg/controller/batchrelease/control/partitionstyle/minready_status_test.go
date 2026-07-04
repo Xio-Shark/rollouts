@@ -98,6 +98,11 @@ func TestRecordMinReadyNormalKeepsDegradedUntilFinalize(t *testing.T) {
 	}
 
 	rc.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatching", "MinReadySeconds strategy advanced the current batch")
+	select {
+	case event := <-rc.recorder.(*record.FakeRecorder).Events:
+		t.Fatalf("unexpected MinReadyBatching event: %s", event)
+	default:
+	}
 
 	degraded := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionMinReadyDegraded)
 	if degraded == nil || degraded.Status != v1.ConditionTrue {

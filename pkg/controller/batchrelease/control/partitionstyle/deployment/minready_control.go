@@ -34,6 +34,7 @@ import (
 	"github.com/openkruise/rollouts/pkg/feature"
 	"github.com/openkruise/rollouts/pkg/util"
 	utilfeature "github.com/openkruise/rollouts/pkg/util/feature"
+	minreadyutil "github.com/openkruise/rollouts/pkg/util/minready"
 )
 
 type MinReadyControl struct {
@@ -45,8 +46,12 @@ func (mc *MinReadyControl) IsMinReadyControl() bool {
 	return true
 }
 
-func (mc *MinReadyControl) BindMinReadyStatus(release *v1beta1.BatchRelease, status *v1beta1.BatchReleaseStatus, recorder record.EventRecorder) {
+func (mc *MinReadyControl) BindStrategyStatus(release *v1beta1.BatchRelease, status *v1beta1.BatchReleaseStatus, recorder record.EventRecorder) {
 	mc.statusWriter = partitionstyle.NewMinReadyStatusWriter(release, status, recorder)
+}
+
+func (mc *MinReadyControl) BindMinReadyStatus(release *v1beta1.BatchRelease, status *v1beta1.BatchReleaseStatus, recorder record.EventRecorder) {
+	mc.BindStrategyStatus(release, status, recorder)
 }
 
 func (mc *MinReadyControl) RecordOperationFailed(reason string, err error) {
@@ -115,6 +120,9 @@ func (mc *MinReadyControl) BuildController() (partitionstyle.Interface, error) {
 	if !ok {
 		return nil, fmt.Errorf("MinReadyControl.BuildController: expected *realController, got %T", built)
 	}
+	// Keep the MinReady wrapper after the real controller loads the Deployment;
+	// returning rc directly would drop MinReady lifecycle, drift-reconcile, and
+	// status-writer behavior from the partition-style control plane.
 	return &MinReadyControl{realController: rc, statusWriter: mc.statusWriter}, nil
 }
 
@@ -173,7 +181,7 @@ func (mc *MinReadyControl) reconcileMaxUnavailable(ctx context.Context, batchCon
 		if int32(current) == target {
 			return nil
 		}
-		klog.V(0).InfoS("MinReady maxUnavailable exceeds target, reducing",
+		klog.V(3).InfoS("MinReady maxUnavailable exceeds target, reducing",
 			"batch", batchContext.CurrentBatch, "deployment", klog.KObj(mc.object),
 			"maxUnavailable", current, "target", target)
 		return mc.patchMaxUnavailable(ctx, int(target))
@@ -181,18 +189,22 @@ func (mc *MinReadyControl) reconcileMaxUnavailable(ctx context.Context, batchCon
 
 	// Sliding window: keep no more than the user's original maxUnavailable
 	// budget worth of updated-but-not-ready pods in flight. As each updated pod
-	// becomes ready, top up the window immediately instead of waiting for the
-	// whole current window to become ready.
+	// becomes ready under the original minReadySeconds, top up the window. When
+	// the original maxUnavailable is 0, maxSurge can still create the first new
+	// pod; once that pod is ready, maxUnavailable advances one ready pod at a
+	// time instead of jumping straight to the batch target.
 	step, err := mc.maxUnavailableStep(batchContext.Replicas)
 	if err != nil {
 		return fmt.Errorf("MinReadyControl.reconcileMaxUnavailable[%d]: %w", batchContext.CurrentBatch, err)
 	}
-	if step <= 0 {
-		// maxUnavailable=0 means the user relies on maxSurge for concurrency
-		// control; there is no budget to slide, so drive the batch directly.
-		return mc.patchMaxUnavailable(ctx, int(target))
+	if step < 0 {
+		return fmt.Errorf("MinReadyControl.reconcileMaxUnavailable[%d]: original maxUnavailable resolved to negative %d: %w",
+			batchContext.CurrentBatch, step, partitionstyle.ErrMinReadyAnnotationInvalid)
 	}
-	next := int(batchContext.UpdatedReadyReplicas) + step
+	next := int(batchContext.UpdatedReadyReplicas)
+	if step > 0 {
+		next += step
+	}
 	if next <= current {
 		return nil
 	}
@@ -324,52 +336,32 @@ func prepareOriginalAnnotations(deployment, writeTarget *apps.Deployment) error 
 		writeOriginalAnnotations(deployment, writeTarget)
 		return nil
 	}
-	if err := ensureOriginalAnnotations(deployment); err != nil {
+	if err := validateOriginalAnnotations(deployment); err != nil {
 		return err
 	}
-	return validateInflatedDeploymentStrategy(deployment)
+	if err := validateInflatedDeploymentStrategy(deployment); err != nil {
+		if !minreadyutil.HasOriginalAvailabilityChange(deployment) {
+			return err
+		}
+		if err := minreadyutil.ValidateRefreshableDeployment(deployment); err != nil {
+			return err
+		}
+		writeOriginalAnnotations(deployment, writeTarget)
+	}
+	return nil
 }
 
-func ensureOriginalAnnotations(deployment *apps.Deployment) error {
+func validateOriginalAnnotations(deployment *apps.Deployment) error {
 	_, err := parseOriginalDeploymentStrategy(deployment.Annotations)
 	return err
 }
 
 func writeOriginalAnnotations(original, modified *apps.Deployment) {
-	if modified.Annotations == nil {
-		modified.Annotations = map[string]string{}
-	}
-	writeOriginalAvailabilityAnnotations(original, modified)
-	modified.Annotations[AnnotationOriginalMaxUnavailable] = serializeOriginalIntOrString(originalMaxUnavailable(original))
-}
-
-func writeOriginalAvailabilityAnnotations(original, modified *apps.Deployment) {
-	if modified.Annotations == nil {
-		modified.Annotations = map[string]string{}
-	}
-	modified.Annotations[AnnotationOriginalMinReadySeconds] = serializeOriginalInt32(&original.Spec.MinReadySeconds, 0)
-	modified.Annotations[AnnotationOriginalProgressDeadlineSeconds] = serializeOriginalInt32(original.Spec.ProgressDeadlineSeconds, DefaultProgressDeadlineSeconds)
-}
-
-func originalMaxUnavailable(deployment *apps.Deployment) *intstr.IntOrString {
-	if deployment.Spec.Strategy.RollingUpdate == nil {
-		return nil
-	}
-	return deployment.Spec.Strategy.RollingUpdate.MaxUnavailable
+	minreadyutil.WriteOriginalAnnotations(original, modified)
 }
 
 func inflateDeploymentStrategy(deployment *apps.Deployment) {
-	progressDeadlineSeconds := InflatedProgressDeadlineSeconds
-	maxUnavailable := intstr.FromInt(0)
-	// MinReady keeps the native controller running; a paused Deployment would
-	// freeze silently, so pausing is always reverted together with inflation.
-	deployment.Spec.Paused = false
-	deployment.Spec.MinReadySeconds = InflatedMinReadySeconds
-	deployment.Spec.ProgressDeadlineSeconds = &progressDeadlineSeconds
-	if deployment.Spec.Strategy.RollingUpdate == nil {
-		deployment.Spec.Strategy.RollingUpdate = &apps.RollingUpdateDeployment{}
-	}
-	deployment.Spec.Strategy.RollingUpdate.MaxUnavailable = &maxUnavailable
+	minreadyutil.InflateDeploymentStrategy(deployment)
 }
 
 func (mc *MinReadyControl) ensureInflatedDeploymentStrategy(ctx context.Context) error {
@@ -391,32 +383,15 @@ func (mc *MinReadyControl) ensureInflatedDeploymentStrategy(ctx context.Context)
 }
 
 func validateInflatedDeploymentStrategy(deployment *apps.Deployment) error {
-	if err := validateDeploymentStrategyType(deployment); err != nil {
-		return err
-	}
-	if deployment.Spec.Paused {
-		// A paused Deployment silently freezes the native controller; surface
-		// it through the degraded channel instead of waiting without signal.
-		return fmt.Errorf("%w: deployment is paused", partitionstyle.ErrMinReadyDriftDetected)
-	}
-	if deployment.Spec.MinReadySeconds != InflatedMinReadySeconds {
-		return fmt.Errorf("%w: minReadySeconds=%d want %d",
-			partitionstyle.ErrMinReadyDriftDetected, deployment.Spec.MinReadySeconds, InflatedMinReadySeconds)
-	}
-	if deployment.Spec.ProgressDeadlineSeconds == nil || *deployment.Spec.ProgressDeadlineSeconds != InflatedProgressDeadlineSeconds {
-		return fmt.Errorf("%w: progressDeadlineSeconds=%v want %d",
-			partitionstyle.ErrMinReadyDriftDetected, deployment.Spec.ProgressDeadlineSeconds, InflatedProgressDeadlineSeconds)
-	}
-	if deployment.Spec.Strategy.RollingUpdate == nil {
-		return fmt.Errorf("%w: rollingUpdate is nil", partitionstyle.ErrMinReadyDriftDetected)
+	if err := minreadyutil.ValidateInflatedDeploymentStrategy(deployment); err != nil {
+		return fmt.Errorf("%w: %v", partitionstyle.ErrMinReadyDriftDetected, err)
 	}
 	return nil
 }
 
 func validateDeploymentStrategyType(deployment *apps.Deployment) error {
-	if deployment.Spec.Strategy.Type != apps.RollingUpdateDeploymentStrategyType {
-		return fmt.Errorf("%w: deployment strategy type %s is not RollingUpdate",
-			partitionstyle.ErrMinReadyDriftDetected, deployment.Spec.Strategy.Type)
+	if err := minreadyutil.ValidateDeploymentStrategyType(deployment); err != nil {
+		return fmt.Errorf("%w: %v", partitionstyle.ErrMinReadyDriftDetected, err)
 	}
 	return nil
 }
@@ -436,22 +411,14 @@ type originalDeploymentStrategy struct {
 }
 
 func parseOriginalDeploymentStrategy(annotations map[string]string) (*originalDeploymentStrategy, error) {
-	minReadySeconds, err := parseOriginalInt32(annotations, AnnotationOriginalMinReadySeconds)
+	original, err := minreadyutil.ParseOriginalDeploymentStrategy(annotations)
 	if err != nil {
-		return nil, err
-	}
-	progressDeadlineSeconds, err := parseOriginalInt32(annotations, AnnotationOriginalProgressDeadlineSeconds)
-	if err != nil {
-		return nil, err
-	}
-	maxUnavailable, err := parseOriginalIntOrString(annotations, AnnotationOriginalMaxUnavailable)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%v: %w", err, partitionstyle.ErrMinReadyAnnotationInvalid)
 	}
 	return &originalDeploymentStrategy{
-		minReadySeconds:         minReadySeconds,
-		progressDeadlineSeconds: progressDeadlineSeconds,
-		maxUnavailable:          maxUnavailable,
+		minReadySeconds:         original.MinReadySeconds,
+		progressDeadlineSeconds: original.ProgressDeadlineSeconds,
+		maxUnavailable:          original.MaxUnavailable,
 	}, nil
 }
 
@@ -478,6 +445,7 @@ func applyOriginalDeploymentStrategy(deployment *apps.Deployment, original *orig
 var EventDegradedDriftDetected = partitionstyle.ErrMinReadyDriftDetected.Error()
 
 var _ partitionstyle.Interface = (*MinReadyControl)(nil)
+var _ partitionstyle.StrategyStatusBinder = (*MinReadyControl)(nil)
 var _ partitionstyle.MinReadyStatusBinder = (*MinReadyControl)(nil)
-var _ partitionstyle.MinReadyLifecycle = (*MinReadyControl)(nil)
+var _ partitionstyle.StrategyLifecycle = (*MinReadyControl)(nil)
 var _ partitionstyle.MinReadyDriftReconciler = (*MinReadyControl)(nil)
