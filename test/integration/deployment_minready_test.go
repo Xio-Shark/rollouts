@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -179,4 +180,85 @@ func TestDeploymentMinReadyControlPlaneFinalizeRestoresOriginalFields(t *testing
 	}
 	assertIntegrationCondition(t, status, v1beta1.RolloutConditionMinReadyFinalized, corev1.ConditionTrue, "MinReadyFinalized")
 	assertIntegrationEvent(t, recorder, "MinReadyFinalized")
+}
+
+func TestDeploymentMinReadyControlPlaneDeletionTriggersFinalizeAndMetricsCleanup(t *testing.T) {
+	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
+	release := newIntegrationMinReadyRelease()
+	deployment := newIntegrationDeployment()
+	recorder := record.NewFakeRecorder(20)
+	cli := newIntegrationClient(release, deployment)
+	status := release.Status.DeepCopy()
+	control := newIntegrationMinReadyControl(cli, recorder, release, status, deployment.Name)
+
+	if err := control.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	initialized := fetchIntegrationDeployment(t, cli, deployment)
+	assertInflatedDeployment(t, initialized)
+
+	status2 := release.Status.DeepCopy()
+	control2 := newIntegrationMinReadyControl(cli, recorder, release, status2, deployment.Name)
+
+	if err := control2.Finalize(); err != nil {
+		t.Fatalf("Finalize failed: %v", err)
+	}
+
+	finalized := fetchIntegrationDeployment(t, cli, deployment)
+	if finalized.Spec.MinReadySeconds != 5 {
+		t.Fatalf("minReadySeconds = %d, want 5", finalized.Spec.MinReadySeconds)
+	}
+	if finalized.Spec.ProgressDeadlineSeconds == nil || *finalized.Spec.ProgressDeadlineSeconds != 60 {
+		t.Fatalf("progressDeadlineSeconds = %v, want 60", finalized.Spec.ProgressDeadlineSeconds)
+	}
+	if unavailable := finalized.Spec.Strategy.RollingUpdate.MaxUnavailable; unavailable == nil || unavailable.StrVal != "25%" {
+		t.Fatalf("maxUnavailable = %v, want 25%%", unavailable)
+	}
+	if surge := finalized.Spec.Strategy.RollingUpdate.MaxSurge; surge == nil || surge.IntVal != 1 {
+		t.Fatalf("maxSurge = %v, want 1", surge)
+	}
+	for _, key := range partitiondeployment.AllOriginalAnnotations {
+		if _, ok := finalized.Annotations[key]; ok {
+			t.Fatalf("annotation %s still exists after deletion", key)
+		}
+	}
+	assertIntegrationCondition(t, status2, v1beta1.RolloutConditionMinReadyFinalized, corev1.ConditionTrue, "MinReadyFinalized")
+	assertIntegrationEvent(t, recorder, "MinReadyFinalized")
+}
+
+func TestDeploymentMinReadyControlPlaneMaxSurgeMaxUnavailableNativeBehavior(t *testing.T) {
+	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
+	release := newIntegrationMinReadyRelease()
+	release.Status.CanaryStatus.CurrentBatch = 1
+	deployment := newInflatedIntegrationDeployment()
+	deployment.Status.Replicas = 10
+	deployment.Status.UpdatedReplicas = 5
+	deployment.Status.ReadyReplicas = 10
+
+	rs := newIntegrationUpdatedReplicaSet(deployment, release.Status.UpdateRevision, 5, 5)
+	pods := newIntegrationUpdatedPods(deployment, rs, release.Status.UpdateRevision, "", 5, 5)
+	recorder := record.NewFakeRecorder(20)
+	cli := newIntegrationClient(appendIntegrationObjects([]client.Object{release, deployment, rs}, pods)...)
+	status := release.Status.DeepCopy()
+	control := newIntegrationMinReadyControl(cli, recorder, release, status, deployment.Name)
+
+	if err := control.UpgradeBatch(); err != nil {
+		t.Fatalf("UpgradeBatch failed: %v", err)
+	}
+
+	got := fetchIntegrationDeployment(t, cli, deployment)
+	if got.Spec.Strategy.RollingUpdate.MaxUnavailable == nil {
+		t.Fatalf("maxUnavailable is nil after UpgradeBatch")
+	}
+	scaledUnavailable, err := intstr.GetScaledValueFromIntOrPercent(got.Spec.Strategy.RollingUpdate.MaxUnavailable, int(deployment.Status.Replicas), true)
+	if err != nil {
+		t.Fatalf("Failed to scale maxUnavailable: %v", err)
+	}
+	if scaledUnavailable != 5 {
+		t.Fatalf("maxUnavailable scaled value = %d, want 5 (sliding window with all updated pods ready)", scaledUnavailable)
+	}
+	if got.Spec.Strategy.RollingUpdate.MaxSurge == nil || got.Spec.Strategy.RollingUpdate.MaxSurge.IntVal != 1 {
+		t.Fatalf("maxSurge = %v, want 1 (original value preserved)", got.Spec.Strategy.RollingUpdate.MaxSurge)
+	}
 }
