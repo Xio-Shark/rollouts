@@ -164,14 +164,14 @@ var _ = SIGDescribe("Deployment MinReadySeconds", func() {
 
 			// Step 1 (20% of 5 replicas = 1): surge bounded by MaxSurge=1,
 			// at least 1 updated pod, all updated pods Ready.
-			expectMinReadyE2EDeploymentPodInvariants(namespace, 5, 1, 1)
+			expectMinReadyE2EDeploymentPodInvariants(namespace, rollout.Name, 5, 1, 1)
 
 			resumeMinReadyE2ERollout(namespace, rollout.Name)
 			waitMinReadyE2ERolloutStepPaused(namespace, rollout.Name, 2)
 
 			// Step 2 (50% of 5 replicas = 3): surge bounded, at least 3
 			// updated pods (NewRSReplicasLimit caps at min(ceil(5*0.5), 4)=3).
-			expectMinReadyE2EDeploymentPodInvariants(namespace, 5, 1, 3)
+			expectMinReadyE2EDeploymentPodInvariants(namespace, rollout.Name, 5, 1, 3)
 
 			finishMinReadyE2ERollout(namespace, rollout.Name)
 

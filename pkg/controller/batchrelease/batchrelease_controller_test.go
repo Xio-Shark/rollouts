@@ -1295,6 +1295,35 @@ func TestMinReadyDeletionReconcileCleanupsMetricsAndRestoresDeployment(t *testin
 	assertMinReadyMetricsAbsent(t, release.Name, release.Namespace)
 }
 
+func TestMinReadyFinalizerRemovalCleansMetricsWhenWorkloadAlreadyGone(t *testing.T) {
+	release := minReadyRelease()
+	release.Name = "release-workload-gone"
+	release.Status.Phase = v1beta1.RolloutPhaseCompleted
+	release.Status.Conditions = []v1beta1.RolloutCondition{{
+		Type:   v1beta1.RolloutConditionMinReadyBatching,
+		Status: corev1.ConditionTrue,
+		Reason: "MinReadyBatching",
+	}}
+	now := metav1.Now()
+	release.DeletionTimestamp = &now
+	release.Finalizers = []string{ReleaseFinalizer}
+
+	brmetrics.RecordMinReadyBatch(release, brmetrics.BatchResultSuccess)
+	brmetrics.RecordMinReadyDegraded(release, brmetrics.DegradedReasonControllerError)
+
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(release).Build()
+	reconciler := &BatchReleaseReconciler{Client: cli}
+
+	done, err := reconciler.handleFinalizer(release)
+	if err != nil {
+		t.Fatalf("handleFinalizer failed: %v", err)
+	}
+	if !done {
+		t.Fatalf("handleFinalizer done = false, want true")
+	}
+	assertMinReadyMetricsAbsent(t, release.Name, release.Namespace)
+}
+
 func assertMinReadyMetricsAbsent(t *testing.T, name, namespace string) {
 	t.Helper()
 	families, err := metrics.Registry.Gather()

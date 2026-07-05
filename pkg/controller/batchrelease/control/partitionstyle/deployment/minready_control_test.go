@@ -97,7 +97,7 @@ func TestMinReadyInitializeRefreshesExistingOriginalAnnotations(t *testing.T) {
 	got := fetchMinReadyDeployment(t, control)
 	assertAnnotation(t, got.Annotations, AnnotationOriginalMinReadySeconds, "7")
 	assertAnnotation(t, got.Annotations, AnnotationOriginalProgressDeadlineSeconds, "60")
-	assertAnnotation(t, got.Annotations, AnnotationOriginalMaxUnavailable, "2")
+	assertAnnotation(t, got.Annotations, AnnotationOriginalMaxUnavailable, "10%")
 	assertMinReadyInflated(t, got)
 }
 
@@ -656,5 +656,26 @@ func TestMinReadySlidingWindowStepZeroAdvancesWithReadySurgePods(t *testing.T) {
 		if v := minReadyMaxUnavailableValue(t, fetchMinReadyDeployment(t, control), 10); v != want {
 			t.Fatalf("ready=%d: maxUnavailable = %d, want %d", ready, v, want)
 		}
+	}
+}
+
+func TestMinReadySlidingWindowRejectsNegativeOriginalMaxUnavailable(t *testing.T) {
+	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
+	deployment := newInflatedMinReadyDeployment()
+	deployment.Annotations = map[string]string{
+		AnnotationOriginalMinReadySeconds:         "7",
+		AnnotationOriginalProgressDeadlineSeconds: "60",
+		AnnotationOriginalMaxUnavailable:          "-1",
+	}
+	control := newBuiltMinReadyControl(t, deployment)
+	ctx := &batchcontext.BatchContext{
+		CurrentBatch:           1,
+		Replicas:               10,
+		DesiredUpdatedReplicas: 5,
+	}
+
+	err := control.ReconcileMaxUnavailableDrift(context.Background(), ctx)
+	if err == nil || !strings.Contains(err.Error(), "resolved to negative") {
+		t.Fatalf("ReconcileMaxUnavailableDrift error = %v, want negative step error", err)
 	}
 }

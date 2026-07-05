@@ -45,6 +45,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/openkruise/rollouts/api/v1beta1"
+	brmetrics "github.com/openkruise/rollouts/pkg/controller/batchrelease/metrics"
 	"github.com/openkruise/rollouts/pkg/util"
 )
 
@@ -266,6 +267,7 @@ func (r *BatchReleaseReconciler) handleFinalizer(release *v1beta1.BatchRelease) 
 	if !release.DeletionTimestamp.IsZero() &&
 		release.Status.Phase == v1beta1.RolloutPhaseCompleted &&
 		controllerutil.ContainsFinalizer(release, ReleaseFinalizer) {
+		cleanupMinReadyMetricsOnFinalizerRemoval(release)
 		err = util.UpdateFinalizer(r.Client, release, util.RemoveFinalizerOpType, ReleaseFinalizer)
 		if client.IgnoreNotFound(err) != nil {
 			return true, err
@@ -282,4 +284,23 @@ func (r *BatchReleaseReconciler) handleFinalizer(release *v1beta1.BatchRelease) 
 	}
 
 	return false, nil
+}
+
+func cleanupMinReadyMetricsOnFinalizerRemoval(release *v1beta1.BatchRelease) {
+	if hasMinReadyStatusCondition(release.Status.Conditions) {
+		brmetrics.DeleteMinReadyMetrics(release)
+	}
+}
+
+func hasMinReadyStatusCondition(conditions []v1beta1.RolloutCondition) bool {
+	for _, condition := range conditions {
+		switch condition.Type {
+		case v1beta1.RolloutConditionMinReadyInitialized,
+			v1beta1.RolloutConditionMinReadyBatching,
+			v1beta1.RolloutConditionMinReadyDegraded,
+			v1beta1.RolloutConditionMinReadyFinalized:
+			return true
+		}
+	}
+	return false
 }

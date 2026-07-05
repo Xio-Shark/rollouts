@@ -244,11 +244,11 @@ func (h *WorkloadHandler) handleDeployment(newObj, oldObj *apps.Deployment) (boo
 			if isEffectiveDeploymentRevisionChange(oldObj, newObj) {
 				if err := enrollMinReadyDeploymentWithPrevious(newObj, oldObj); err != nil {
 					klog.Warningf("Skip MinReady continuous enrollment for Deployment(%s/%s): %v", newObj.Namespace, newObj.Name, err)
-					return enforceMinReadyInflation(newObj), nil
+					return enforceMinReadyInflation(newObj, oldObj), nil
 				}
 				return true, nil
 			}
-			return enforceMinReadyInflation(newObj), nil
+			return enforceMinReadyInflation(newObj, oldObj), nil
 		}
 		strategy := util.GetDeploymentStrategy(newObj)
 		// partition
@@ -497,7 +497,7 @@ func isMinReadySecondsStrategy(rollout *appsv1beta1.Rollout, deployment *apps.De
 	return appsv1beta1.HasMinReadyOriginalAnnotations(deployment.Annotations)
 }
 
-func enforceMinReadyInflation(deployment *apps.Deployment) bool {
+func enforceMinReadyInflation(deployment, previous *apps.Deployment) bool {
 	if !appsv1beta1.HasMinReadyOriginalAnnotations(deployment.Annotations) {
 		return false
 	}
@@ -516,8 +516,7 @@ func enforceMinReadyInflation(deployment *apps.Deployment) bool {
 		modified = true
 	}
 	if deployment.Spec.Strategy.RollingUpdate == nil {
-		maxUnavailable := intstr.FromInt(0)
-		deployment.Spec.Strategy.RollingUpdate = &apps.RollingUpdateDeployment{MaxUnavailable: &maxUnavailable}
+		deployment.Spec.Strategy.RollingUpdate = previousMinReadyRollingUpdate(previous)
 		modified = true
 	}
 	// MaxUnavailable is controller-owned after enrollment; resetting a non-nil
@@ -532,6 +531,25 @@ func enforceMinReadyInflation(deployment *apps.Deployment) bool {
 		modified = true
 	}
 	return modified
+}
+
+func previousMinReadyRollingUpdate(previous *apps.Deployment) *apps.RollingUpdateDeployment {
+	maxUnavailable := intstr.FromInt(0)
+	var maxSurge *intstr.IntOrString
+	if previous == nil || previous.Spec.Strategy.RollingUpdate == nil {
+		return &apps.RollingUpdateDeployment{MaxUnavailable: &maxUnavailable}
+	}
+	if previous.Spec.Strategy.RollingUpdate.MaxUnavailable != nil {
+		maxUnavailable = *previous.Spec.Strategy.RollingUpdate.MaxUnavailable
+	}
+	if previous.Spec.Strategy.RollingUpdate.MaxSurge != nil {
+		copied := *previous.Spec.Strategy.RollingUpdate.MaxSurge
+		maxSurge = &copied
+	}
+	return &apps.RollingUpdateDeployment{
+		MaxUnavailable: &maxUnavailable,
+		MaxSurge:       maxSurge,
+	}
 }
 
 func setDeploymentStrategyAnnotation(strategy appsv1alpha1.DeploymentStrategy, d *apps.Deployment) {

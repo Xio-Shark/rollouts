@@ -85,11 +85,20 @@ func (rc *realBatchControlPlane) reportOperationFailed(controller Interface, rea
 	klog.ErrorS(err, "Partition-style control plane failed", "release", klog.KObj(rc.release), "reason", reason)
 }
 
+func (rc *realBatchControlPlane) failureReason(controller Interface, operation StrategyOperation) string {
+	if reasoner, ok := controller.(StrategyFailureReasoner); ok {
+		if reason := reasoner.FailureReason(operation); reason != "" {
+			return reason
+		}
+	}
+	return fmt.Sprintf("PartitionStyle%sFailed", operation)
+}
+
 func (rc *realBatchControlPlane) Initialize() (err error) {
 	controller := rc.Interface
 	var reportErr error
 	defer func() {
-		rc.reportOperationFailed(controller, "MinReadyInitializeFailed", reportErr)
+		rc.reportOperationFailed(controller, rc.failureReason(controller, StrategyOperationInitialize), reportErr)
 	}()
 
 	controller, err = rc.BuildController()
@@ -127,7 +136,7 @@ func (rc *realBatchControlPlane) UpgradeBatch() (err error) {
 	controller := rc.Interface
 	var reportErr error
 	defer func() {
-		rc.reportOperationFailed(controller, "MinReadyBatchingFailed", reportErr)
+		rc.reportOperationFailed(controller, rc.failureReason(controller, StrategyOperationBatching), reportErr)
 	}()
 
 	controller, err = rc.BuildController()
@@ -178,7 +187,7 @@ func (rc *realBatchControlPlane) EnsureBatchPodsReadyAndLabeled() (err error) {
 	controller := rc.Interface
 	var reportErr error
 	defer func() {
-		rc.reportOperationFailed(controller, "MinReadyBatchingFailed", reportErr)
+		rc.reportOperationFailed(controller, rc.failureReason(controller, StrategyOperationBatching), reportErr)
 	}()
 
 	controller, err = rc.BuildController()
@@ -229,7 +238,7 @@ func (rc *realBatchControlPlane) Finalize() (err error) {
 	controller := rc.Interface
 	var reportErr error
 	defer func() {
-		rc.reportOperationFailed(controller, "MinReadyFinalizeFailed", reportErr)
+		rc.reportOperationFailed(controller, rc.failureReason(controller, StrategyOperationFinalize), reportErr)
 	}()
 
 	controller, err = rc.BuildController()

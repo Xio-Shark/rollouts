@@ -60,6 +60,19 @@ func (mc *MinReadyControl) RecordOperationFailed(reason string, err error) {
 	}
 }
 
+func (mc *MinReadyControl) FailureReason(operation partitionstyle.StrategyOperation) string {
+	switch operation {
+	case partitionstyle.StrategyOperationInitialize:
+		return "MinReadyInitializeFailed"
+	case partitionstyle.StrategyOperationBatching:
+		return "MinReadyBatchingFailed"
+	case partitionstyle.StrategyOperationFinalize:
+		return "MinReadyFinalizeFailed"
+	default:
+		return ""
+	}
+}
+
 func (mc *MinReadyControl) RecordZeroReplicaBatching() {
 	if mc.statusWriter != nil {
 		mc.statusWriter.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatching", "MinReadySeconds strategy has no replicas to upgrade")
@@ -346,7 +359,7 @@ func prepareOriginalAnnotations(deployment, writeTarget *apps.Deployment) error 
 		if err := minreadyutil.ValidateRefreshableDeployment(deployment); err != nil {
 			return err
 		}
-		writeOriginalAnnotations(deployment, writeTarget)
+		writeOriginalAvailabilityAnnotations(deployment, writeTarget)
 	}
 	return nil
 }
@@ -358,6 +371,10 @@ func validateOriginalAnnotations(deployment *apps.Deployment) error {
 
 func writeOriginalAnnotations(original, modified *apps.Deployment) {
 	minreadyutil.WriteOriginalAnnotations(original, modified)
+}
+
+func writeOriginalAvailabilityAnnotations(original, modified *apps.Deployment) {
+	minreadyutil.WriteOriginalAvailabilityAnnotations(original, modified)
 }
 
 func inflateDeploymentStrategy(deployment *apps.Deployment) {
@@ -448,4 +465,5 @@ var _ partitionstyle.Interface = (*MinReadyControl)(nil)
 var _ partitionstyle.StrategyStatusBinder = (*MinReadyControl)(nil)
 var _ partitionstyle.MinReadyStatusBinder = (*MinReadyControl)(nil)
 var _ partitionstyle.StrategyLifecycle = (*MinReadyControl)(nil)
+var _ partitionstyle.StrategyFailureReasoner = (*MinReadyControl)(nil)
 var _ partitionstyle.MinReadyDriftReconciler = (*MinReadyControl)(nil)

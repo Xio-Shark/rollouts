@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/gomega"
 	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/retry"
@@ -32,6 +33,7 @@ import (
 
 	"github.com/openkruise/rollouts/api/v1beta1"
 	partitiondeployment "github.com/openkruise/rollouts/pkg/controller/batchrelease/control/partitionstyle/deployment"
+	"github.com/openkruise/rollouts/pkg/util"
 )
 
 func waitMinReadyE2EDeploymentReplicas(namespace string, replicas int32) {
@@ -181,11 +183,17 @@ func setMinReadyE2EInitialReplicas(deployment *apps.Deployment, replicas int32) 
 // the native controller behavior (not just the rollout controller's spec patch)
 // — the Deployment controller must actually create/terminate pods according to
 // the MaxSurge/MaxUnavailable boundaries the MinReady controller sets.
-func expectMinReadyE2EDeploymentPodInvariants(namespace string, desired, maxSurge, minUpdated int32) {
+func expectMinReadyE2EDeploymentPodInvariants(namespace, releaseName string, desired, maxSurge, minUpdated int32) {
 	Eventually(func() bool {
 		deployment := &apps.Deployment{}
 		key := types.NamespacedName{Namespace: namespace, Name: minReadyE2EDeploymentName}
 		Expect(k8sClient.Get(context.TODO(), key, deployment)).Should(Succeed())
+		release := &v1beta1.BatchRelease{}
+		Expect(k8sClient.Get(context.TODO(), types.NamespacedName{Namespace: namespace, Name: releaseName}, release)).Should(Succeed())
+		if release.Status.UpdateRevision == "" {
+			return false
+		}
+		updatedReady := minReadyE2EUpdatedReadyPods(namespace, deployment, release.Status.UpdateRevision)
 		// Surge invariant: total pods never exceed desired + MaxSurge.
 		if deployment.Status.Replicas > desired+maxSurge {
 			return false
@@ -196,12 +204,35 @@ func expectMinReadyE2EDeploymentPodInvariants(namespace string, desired, maxSurg
 		}
 		// MinReady controller only advances MaxUnavailable when pods become
 		// Ready, so every updated pod should be Ready at the paused state.
-		if deployment.Status.ReadyReplicas < deployment.Status.UpdatedReplicas {
+		if updatedReady < deployment.Status.UpdatedReplicas {
 			return false
 		}
 		return true
 	}, 5*time.Minute, time.Second).Should(BeTrue(),
 		fmt.Sprintf("pod invariants not satisfied: want minUpdated=%d surgeBound=%d", minUpdated, desired+maxSurge))
+}
+
+func minReadyE2EUpdatedReadyPods(namespace string, deployment *apps.Deployment, updateRevision string) int32 {
+	pods := &corev1.PodList{}
+	listOptions := []client.ListOption{client.InNamespace(namespace)}
+	if deployment.Spec.Selector != nil {
+		selector, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
+		Expect(err).Should(Succeed())
+		listOptions = append(listOptions, client.MatchingLabelsSelector{Selector: selector})
+	}
+	Expect(k8sClient.List(context.TODO(), pods, listOptions...)).Should(Succeed())
+	updatedReady := int32(0)
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if !util.IsPodActive(pod) || !util.IsConsistentWithRevision(pod.Labels, updateRevision) {
+			continue
+		}
+		ready := util.GetPodReadyCondition(pod.Status)
+		if ready != nil && ready.Status == corev1.ConditionTrue {
+			updatedReady++
+		}
+	}
+	return updatedReady
 }
 
 // expectMinReadyE2EDeploymentFinalState asserts the native Deployment controller

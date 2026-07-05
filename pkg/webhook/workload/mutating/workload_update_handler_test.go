@@ -1143,7 +1143,7 @@ func inflatedMinReadyDeployment() *apps.Deployment {
 func TestEnforceMinReadyInflation(t *testing.T) {
 	t.Run("no MinReady annotations leaves object untouched", func(t *testing.T) {
 		d := &apps.Deployment{Spec: apps.DeploymentSpec{Strategy: apps.DeploymentStrategy{Type: apps.RecreateDeploymentStrategyType}}}
-		if enforceMinReadyInflation(d) {
+		if enforceMinReadyInflation(d, nil) {
 			t.Fatalf("expected no modification without MinReady annotations")
 		}
 		if d.Spec.Strategy.Type != apps.RecreateDeploymentStrategyType {
@@ -1153,7 +1153,7 @@ func TestEnforceMinReadyInflation(t *testing.T) {
 
 	t.Run("healthy inflated state is not modified", func(t *testing.T) {
 		d := inflatedMinReadyDeployment()
-		if enforceMinReadyInflation(d) {
+		if enforceMinReadyInflation(d, nil) {
 			t.Fatalf("expected no modification for an already-inflated healthy deployment")
 		}
 	})
@@ -1161,7 +1161,7 @@ func TestEnforceMinReadyInflation(t *testing.T) {
 	t.Run("strategy type drift to Recreate is rewritten", func(t *testing.T) {
 		d := inflatedMinReadyDeployment()
 		d.Spec.Strategy.Type = apps.RecreateDeploymentStrategyType
-		if !enforceMinReadyInflation(d) {
+		if !enforceMinReadyInflation(d, nil) {
 			t.Fatalf("expected modification for strategy type drift")
 		}
 		if d.Spec.Strategy.Type != apps.RollingUpdateDeploymentStrategyType {
@@ -1172,7 +1172,7 @@ func TestEnforceMinReadyInflation(t *testing.T) {
 	t.Run("paused drift is reverted", func(t *testing.T) {
 		d := inflatedMinReadyDeployment()
 		d.Spec.Paused = true
-		if !enforceMinReadyInflation(d) {
+		if !enforceMinReadyInflation(d, nil) {
 			t.Fatalf("expected modification for paused drift")
 		}
 		if d.Spec.Paused {
@@ -1183,7 +1183,7 @@ func TestEnforceMinReadyInflation(t *testing.T) {
 	t.Run("nil rollingUpdate is restored", func(t *testing.T) {
 		d := inflatedMinReadyDeployment()
 		d.Spec.Strategy.RollingUpdate = nil
-		if !enforceMinReadyInflation(d) {
+		if !enforceMinReadyInflation(d, nil) {
 			t.Fatalf("expected modification for nil rollingUpdate")
 		}
 		if d.Spec.Strategy.RollingUpdate == nil {
@@ -1191,11 +1191,33 @@ func TestEnforceMinReadyInflation(t *testing.T) {
 		}
 	})
 
+	t.Run("nil rollingUpdate is restored from previous rollingUpdate", func(t *testing.T) {
+		previous := inflatedMinReadyDeployment()
+		maxUnavailable := intstr.FromInt(2)
+		maxSurge := intstr.FromInt(1)
+		previous.Spec.Strategy.RollingUpdate = &apps.RollingUpdateDeployment{
+			MaxUnavailable: &maxUnavailable,
+			MaxSurge:       &maxSurge,
+		}
+		d := previous.DeepCopy()
+		d.Spec.Strategy.Type = apps.RecreateDeploymentStrategyType
+		d.Spec.Strategy.RollingUpdate = nil
+		if !enforceMinReadyInflation(d, previous) {
+			t.Fatalf("expected modification for nil rollingUpdate")
+		}
+		if unavailable := d.Spec.Strategy.RollingUpdate.MaxUnavailable; unavailable == nil || unavailable.IntVal != 2 {
+			t.Fatalf("maxUnavailable not restored from previous: %v", unavailable)
+		}
+		if surge := d.Spec.Strategy.RollingUpdate.MaxSurge; surge == nil || surge.IntVal != 1 {
+			t.Fatalf("maxSurge not restored from previous: %v", surge)
+		}
+	})
+
 	t.Run("controller-owned maxUnavailable advancement is preserved", func(t *testing.T) {
 		d := inflatedMinReadyDeployment()
 		maxUnavailable := intstr.FromInt(2)
 		d.Spec.Strategy.RollingUpdate.MaxUnavailable = &maxUnavailable
-		if enforceMinReadyInflation(d) {
+		if enforceMinReadyInflation(d, nil) {
 			t.Fatalf("expected no modification for maxUnavailable advancement")
 		}
 		if unavailable := d.Spec.Strategy.RollingUpdate.MaxUnavailable; unavailable == nil || unavailable.IntVal != 2 {
@@ -1207,7 +1229,7 @@ func TestEnforceMinReadyInflation(t *testing.T) {
 		d := inflatedMinReadyDeployment()
 		d.Spec.MinReadySeconds = 5
 		d.Spec.ProgressDeadlineSeconds = pointer.Int32(600)
-		if !enforceMinReadyInflation(d) {
+		if !enforceMinReadyInflation(d, nil) {
 			t.Fatalf("expected modification for deflated fields")
 		}
 		if d.Spec.MinReadySeconds != inflatedMinReadySeconds {

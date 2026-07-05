@@ -89,6 +89,22 @@ func (f *fakePartitionController) RecordOperationFailed(reason string, err error
 	}
 }
 
+func (f *fakePartitionController) FailureReason(operation StrategyOperation) string {
+	if !f.minReady {
+		return ""
+	}
+	switch operation {
+	case StrategyOperationInitialize:
+		return "MinReadyInitializeFailed"
+	case StrategyOperationBatching:
+		return "MinReadyBatchingFailed"
+	case StrategyOperationFinalize:
+		return "MinReadyFinalizeFailed"
+	default:
+		return ""
+	}
+}
+
 func (f *fakePartitionController) RecordZeroReplicaBatching() {
 	if f.statusWriter != nil {
 		f.statusWriter.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatching", "MinReadySeconds strategy has no replicas to upgrade")

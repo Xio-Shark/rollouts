@@ -55,6 +55,20 @@ type StrategyLifecycle interface {
 	RecordFinalized()
 }
 
+type StrategyOperation string
+
+const (
+	StrategyOperationInitialize StrategyOperation = "Initialize"
+	StrategyOperationBatching   StrategyOperation = "Batching"
+	StrategyOperationFinalize   StrategyOperation = "Finalize"
+)
+
+// StrategyFailureReasoner lets strategy-specific controllers choose stable
+// event/condition reasons without hard-coding one strategy in the control plane.
+type StrategyFailureReasoner interface {
+	FailureReason(operation StrategyOperation) string
+}
+
 type MinReadyLifecycle = StrategyLifecycle
 
 // MinReadyDriftReconciler converges inflated maxUnavailable back to the active
