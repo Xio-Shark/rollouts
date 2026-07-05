@@ -227,8 +227,8 @@ func (mc *MinReadyControl) reconcileMaxUnavailable(ctx context.Context, batchCon
 	return mc.patchMaxUnavailable(ctx, next)
 }
 
-// maxUnavailableStep returns the user's original maxUnavailable scaled to the
-// replica count; the sliding window uses it as the advancement stride.
+// maxUnavailableStep mirrors Kubernetes Deployment fencepost resolution for the
+// user's original maxUnavailable; the sliding window uses it as the stride.
 func (mc *MinReadyControl) maxUnavailableStep(replicas int32) (int, error) {
 	original, err := parseOriginalDeploymentStrategy(mc.object.Annotations)
 	if err != nil {
@@ -238,7 +238,22 @@ func (mc *MinReadyControl) maxUnavailableStep(replicas int32) (int, error) {
 	if original.maxUnavailable != nil {
 		step = *original.maxUnavailable
 	}
-	return intstr.GetScaledValueFromIntOrPercent(&step, int(replicas), true)
+	surge := intstr.FromInt(0)
+	if mc.object.Spec.Strategy.RollingUpdate != nil && mc.object.Spec.Strategy.RollingUpdate.MaxSurge != nil {
+		surge = *mc.object.Spec.Strategy.RollingUpdate.MaxSurge
+	}
+	resolvedSurge, err := intstr.GetScaledValueFromIntOrPercent(&surge, int(replicas), true)
+	if err != nil {
+		return 0, err
+	}
+	resolvedUnavailable, err := intstr.GetScaledValueFromIntOrPercent(&step, int(replicas), false)
+	if err != nil {
+		return 0, err
+	}
+	if resolvedSurge == 0 && resolvedUnavailable == 0 {
+		return 1, nil
+	}
+	return resolvedUnavailable, nil
 }
 
 // patchMaxUnavailable writes the given integer maxUnavailable back to the

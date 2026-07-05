@@ -213,10 +213,11 @@ func TestMinReadyUpgradeBatchUpdatesMaxUnavailableOnly(t *testing.T) {
 	}
 
 	got := fetchMinReadyDeployment(t, control)
-	// Sliding window (P0-3): UpgradeBatch advances maxUnavailable one step
-	// (original 25% of 10 = 3) toward the batch target 5, not straight to 5.
-	if unavailable := got.Spec.Strategy.RollingUpdate.MaxUnavailable; unavailable == nil || unavailable.IntVal != 3 {
-		t.Fatalf("maxUnavailable = %v, want 3 (first sliding-window step)", unavailable)
+	// Sliding window (P0-3): UpgradeBatch advances maxUnavailable one native
+	// Deployment step (original 25% of 10 floors to 2) toward the batch
+	// target 5, not straight to 5.
+	if unavailable := got.Spec.Strategy.RollingUpdate.MaxUnavailable; unavailable == nil || unavailable.IntVal != 2 {
+		t.Fatalf("maxUnavailable = %v, want 2 (first sliding-window step)", unavailable)
 	}
 	if got.Spec.Strategy.Type != apps.RollingUpdateDeploymentStrategyType {
 		t.Fatalf("strategy.type = %q, want RollingUpdate", got.Spec.Strategy.Type)
@@ -301,9 +302,10 @@ func TestMinReadyUpgradeBatchRestoresInflatedStrategyFields(t *testing.T) {
 		t.Fatalf("rollingUpdate is nil, want restored strategy")
 	}
 	// Sliding window (P0-3): after re-inflation maxUnavailable starts at 0, so
-	// UpgradeBatch advances it one step (25% of 10 = 3) toward target 5.
-	if unavailable := got.Spec.Strategy.RollingUpdate.MaxUnavailable; unavailable == nil || unavailable.IntVal != 3 {
-		t.Fatalf("maxUnavailable = %v, want 3 (first sliding-window step)", unavailable)
+	// UpgradeBatch advances it one native Deployment step (25% of 10 floors
+	// to 2) toward target 5.
+	if unavailable := got.Spec.Strategy.RollingUpdate.MaxUnavailable; unavailable == nil || unavailable.IntVal != 2 {
+		t.Fatalf("maxUnavailable = %v, want 2 (first sliding-window step)", unavailable)
 	}
 }
 
@@ -561,7 +563,7 @@ func TestMinReadyFinalizeRestoresAfterGateDisabled(t *testing.T) {
 func TestMinReadySlidingWindowAdvancesStepByStep(t *testing.T) {
 	// P0-3: a large batch target must not be written to maxUnavailable in a
 	// single patch. reconcileMaxUnavailable keeps at most the user's original
-	// maxUnavailable (25% of 10 = 3) worth of updated-but-not-ready pods in
+	// maxUnavailable (25% of 10 floors to 2) worth of updated-but-not-ready pods in
 	// flight, topping up the window as individual pods become ready.
 	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
 	deployment := newInflatedMinReadyDeployment()
@@ -578,11 +580,12 @@ func TestMinReadySlidingWindowAdvancesStepByStep(t *testing.T) {
 		wantMU  int
 		comment string
 	}{
-		{0, 3, "empty window advances to first step"},
-		{1, 4, "one ready pod tops up one slot"},
-		{2, 5, "partial readiness keeps topping up"},
-		{4, 7, "does not wait for the whole current window"},
-		{6, 9, "advance caps at target"},
+		{0, 2, "empty window advances to first step"},
+		{1, 3, "one ready pod tops up one slot"},
+		{2, 4, "partial readiness keeps topping up"},
+		{4, 6, "does not wait for the whole current window"},
+		{6, 8, "continues in native maxUnavailable strides"},
+		{7, 9, "advance caps at target"},
 		{9, 9, "at target holds"},
 	}
 	for i, s := range steps {
@@ -615,6 +618,30 @@ func TestMinReadySlidingWindowReachesSmallTargetInOneStep(t *testing.T) {
 	}
 	if v := minReadyMaxUnavailableValue(t, fetchMinReadyDeployment(t, control), 10); v != 2 {
 		t.Fatalf("maxUnavailable = %d, want 2 (small target reached in one step)", v)
+	}
+}
+
+func TestMinReadySlidingWindowUsesNativeMaxUnavailableRounding(t *testing.T) {
+	// P0-3: Deployment maxUnavailable percentages round down. With 5 replicas,
+	// 25% resolves to 1, not 2, so the MinReady sliding window must not widen
+	// the user's original unavailable budget.
+	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
+	deployment := newInflatedMinReadyDeployment()
+	deployment.Spec.Replicas = pointer.Int32(5)
+	addMinReadyOriginalAnnotations(deployment)
+	control := newBuiltMinReadyControl(t, deployment)
+	ctx := &batchcontext.BatchContext{
+		CurrentBatch:           1,
+		Replicas:               5,
+		DesiredUpdatedReplicas: 3,
+		UpdatedReadyReplicas:   0,
+	}
+
+	if err := control.ReconcileMaxUnavailableDrift(context.Background(), ctx); err != nil {
+		t.Fatalf("drift reconcile failed: %v", err)
+	}
+	if v := minReadyMaxUnavailableValue(t, fetchMinReadyDeployment(t, control), 5); v != 1 {
+		t.Fatalf("maxUnavailable = %d, want 1 (25%% of 5 rounded down)", v)
 	}
 }
 

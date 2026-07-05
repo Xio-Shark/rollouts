@@ -112,7 +112,13 @@ func (w *MinReadyStatusWriter) RecordNormal(condType v1beta1.RolloutConditionTyp
 	}
 	previousCondition := util.GetBatchReleaseCondition(*w.status, condType)
 	condition := util.NewRolloutCondition(condType, v1.ConditionTrue, reason, message)
-	util.SetBatchReleaseCondition(w.status, *condition)
+	updated := util.SetBatchReleaseCondition(w.status, *condition)
+	if !updated {
+		if reason == "MinReadyFinalized" {
+			brmetrics.DeleteMinReadyMetrics(w.release)
+		}
+		return
+	}
 	if reason == "MinReadyFinalized" {
 		clearMinReadyDegraded(w.status)
 		w.status.Message = ""

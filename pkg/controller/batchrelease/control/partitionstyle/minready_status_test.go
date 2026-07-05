@@ -76,6 +76,59 @@ func TestRecordMinReadyNormalObservesBatchDuration(t *testing.T) {
 	}
 }
 
+func TestRecordMinReadyBatchReadyIsIdempotent(t *testing.T) {
+	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
+	release := &v1beta1.BatchRelease{
+		ObjectMeta: metav1.ObjectMeta{Name: "batch-ready-idempotent", Namespace: "default"},
+		Spec: v1beta1.BatchReleaseSpec{
+			WorkloadRef: v1beta1.ObjectRef{APIVersion: apps.SchemeGroupVersion.String(), Kind: "Deployment", Name: "demo"},
+			ReleasePlan: v1beta1.ReleasePlan{RollingStyle: v1beta1.PartitionRollingStyle},
+		},
+	}
+	brmetrics.DeleteMinReadyMetrics(release)
+	defer brmetrics.DeleteMinReadyMetrics(release)
+
+	status := &v1beta1.BatchReleaseStatus{}
+	startedAt := metav1.NewTime(time.Now().Add(-3 * time.Second))
+	util.SetBatchReleaseCondition(status, v1beta1.RolloutCondition{
+		Type:               v1beta1.RolloutConditionMinReadyBatching,
+		Status:             v1.ConditionTrue,
+		Reason:             "MinReadyBatching",
+		Message:            "MinReadySeconds strategy advanced the current batch",
+		LastTransitionTime: startedAt,
+		LastUpdateTime:     startedAt,
+	})
+	recorder := record.NewFakeRecorder(4)
+	rc := &MinReadyStatusWriter{
+		release:  release,
+		status:   status,
+		recorder: recorder,
+	}
+
+	rc.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
+	rc.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
+
+	if value := findCounterValue(t, "rollout_minready_batches_total", map[string]string{
+		"rollout":   release.Name,
+		"namespace": release.Namespace,
+		"result":    brmetrics.BatchResultSuccess,
+	}); value != 1 {
+		t.Fatalf("success counter = %v, want 1 after duplicate BatchReady", value)
+	}
+	events := 0
+	for {
+		select {
+		case <-recorder.Events:
+			events++
+		default:
+			if events != 1 {
+				t.Fatalf("events = %d, want 1 after duplicate BatchReady", events)
+			}
+			return
+		}
+	}
+}
+
 func TestRecordMinReadyNormalKeepsDegradedUntilFinalize(t *testing.T) {
 	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
 	release := &v1beta1.BatchRelease{
@@ -212,6 +265,29 @@ func findHistogramMetric(t *testing.T, name string, labels map[string]string) *d
 	}
 	t.Fatalf("histogram %s with labels %v not found", name, labels)
 	return nil
+}
+
+func findCounterValue(t *testing.T, name string, labels map[string]string) float64 {
+	t.Helper()
+	families, err := ctrlmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics failed: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			if metricLabelsMatch(metric, labels) {
+				if metric.GetCounter() == nil {
+					t.Fatalf("metric %s with labels %v is not a counter", name, labels)
+				}
+				return metric.GetCounter().GetValue()
+			}
+		}
+	}
+	t.Fatalf("counter %s with labels %v not found", name, labels)
+	return 0
 }
 
 func findGaugeMetric(t *testing.T, name string, labels map[string]string) *dto.Gauge {

@@ -315,7 +315,7 @@ func NewMinReadyController(cli client.Client, key types.NamespacedName, gvk sche
    - If `current > target`: external write or scale-down has left `maxUnavailable` above the batch target. This is legal and self-heals by reducing it to the target.
    - If `current >= target`: already at target, no-op.
 
-3. **Patch `maxUnavailable = target`**: A single-field Patch using the same optimistic-lock mechanism. The native RollingUpdate controller observes the change and creates new pods accordingly. Because `minReadySeconds` is inflated, the new pods enter `Ready-but-not-Available` from the Deployment controller's perspective.
+3. **Sliding-window patch**: Resolve the user's original `maxUnavailable` with native Deployment fencepost semantics (`maxUnavailable` percentages round down, `maxSurge` percentages round up, and both resolving to zero falls back to one unavailable pod). Use that value as the stride, then patch `maxUnavailable` to `min(target, updatedReadyReplicas + stride)`. For `maxUnavailable=0` / positive `maxSurge`, the first surge-created ready pod advances the window one pod at a time. The native RollingUpdate controller observes the change and creates new pods accordingly. Because `minReadySeconds` is inflated, the new pods enter `Ready-but-not-Available` from the Deployment controller's perspective.
 
 ##### Batch Context Calculation
 
@@ -592,7 +592,7 @@ Users opt in by enabling the feature gate on the kruise-rollout controller.
 ## Additional Details
 
 - **Test plan**: Unit tests cover all four overridden methods with a focus on idempotency, GitOps drift detection, and the Finalize validation matrix. Integration tests using `envtest` exercise the full Initialize → UpgradeBatch → Finalize cycle. End-to-end tests on a real `kind` cluster cover five core scenarios: normal multi-batch rollout, mid-rollout rollback, controller restart recovery, HPA coexistence, and Rollout CR deletion mid-rollout.
-- **Observability**: four status conditions (`MinReadyInitialized` / `MinReadyBatching` / `MinReadyDegraded` / `MinReadyFinalized`) and four Prometheus metrics (batch totals, batch duration histogram, stuck-time gauge, degraded counter). Repeated batching details are kept as conditions/metrics rather than repeated normal events.
+- **Observability**: four status conditions (`MinReadyInitialized` / `MinReadyBatching` / `MinReadyDegraded` / `MinReadyFinalized`) and four Prometheus metrics (batch totals, batch duration histogram, stuck-time gauge, degraded counter). Repeated batching details are kept as conditions/metrics rather than repeated normal events, and unchanged `MinReadyBatchReady` updates do not emit duplicate success metrics or events.
 - **Shared helpers**: Deployment MinReady annotation parsing and inflated-strategy helpers live in `pkg/util/minready` so webhook and controller paths use the same implementation.
 
 ## Implementation History
