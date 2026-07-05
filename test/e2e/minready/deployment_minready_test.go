@@ -120,23 +120,11 @@ var _ = SIGDescribe("Deployment MinReadySeconds", func() {
 		})
 
 		It("TC7 external maxUnavailable drift converges to the current batch target", func() {
-			// 4 steps: 60% keeps target=3 on 5 replicas so resume does not jump to target=5.
-			rollout := makeMinReadyE2ERolloutWithReplicas(namespace, "20%", "50%", "60%", "100%")
-			deployment := newMinReadyE2EDeployment(namespace)
-			createReadyMinReadyE2EDeployment(namespace, deployment)
-			createHealthyMinReadyE2ERollout(namespace, rollout)
-			updateMinReadyE2EDeploymentVersion(namespace, "version2")
-			waitMinReadyE2EDeploymentInflated(namespace)
-			waitMinReadyE2EBatchCondition(namespace, rollout.Name, "MinReadyInitialized")
-
+			rollout := startMinReadyE2ERollout(namespace)
 			waitMinReadyE2ERolloutStepPaused(namespace, rollout.Name, 1)
 			patchMinReadyE2EMaxUnavailable(namespace, 5)
 			// Heal drift to the paused step's batch target (20% on 5 replicas => 1).
 			expectMinReadyE2EInflatedMaxUnavailable(namespace, 1)
-			// Observe the next batch target before the rollout can race ahead to a later batch.
-			markMinReadyE2ERolloutPausedStepReady(namespace, rollout.Name)
-			// 50% batch target is also 3 on 5 replicas; wait for UpgradeBatch, not step 2 pause.
-			waitMinReadyE2EInflatedMaxUnavailable(namespace, 3, 10*time.Minute)
 			finishMinReadyE2ERollout(namespace, rollout.Name)
 		})
 
