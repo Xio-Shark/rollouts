@@ -144,12 +144,17 @@ func (w *MinReadyStatusWriter) RecordDegraded(reason string, err error) {
 	classified := classifyMinReadyDegradedReason(reason, err)
 	eventReason := classified.event
 	condition := util.NewRolloutCondition(v1beta1.RolloutConditionMinReadyDegraded, v1.ConditionTrue, eventReason, message)
-	util.SetBatchReleaseCondition(w.status, *condition)
+	// Only record metrics/counters/events on an actual condition transition,
+	// so a persistent error re-entering the control plane does not flood
+	// warning events and degraded metrics. Mirrors RecordNormal semantics.
+	updated := util.SetBatchReleaseCondition(w.status, *condition)
+	if !updated {
+		return
+	}
 	w.status.Message = message
-	degradedReason := classified.metric
 	brmetrics.ClearMinReadyStuckSeconds(w.release, brmetrics.StuckReasonBatchReadyTimeout)
 	brmetrics.RecordMinReadyBatch(w.release, brmetrics.BatchResultDegraded)
-	brmetrics.RecordMinReadyDegraded(w.release, degradedReason)
+	brmetrics.RecordMinReadyDegraded(w.release, classified.metric)
 	if w.recorder != nil && w.release != nil {
 		w.recorder.Event(w.release, v1.EventTypeWarning, eventReason, message)
 	}

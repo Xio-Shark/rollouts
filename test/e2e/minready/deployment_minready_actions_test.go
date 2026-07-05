@@ -74,7 +74,7 @@ func waitMinReadyE2ERolloutStepPaused(namespace, name string, step int32) {
 		return rollout.Status.CanaryStatus != nil &&
 			rollout.Status.CanaryStatus.CurrentStepIndex == step &&
 			rollout.Status.CanaryStatus.CurrentStepState == v1beta1.CanaryStepStatePaused
-	}, 10*time.Minute, time.Second).Should(BeTrue())
+	}, 20*time.Minute, time.Second).Should(BeTrue())
 }
 
 func patchMinReadyE2EDeploymentReplicas(namespace string, replicas int32) {

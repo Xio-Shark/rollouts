@@ -129,6 +129,61 @@ func TestRecordMinReadyBatchReadyIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRecordMinReadyDegradedIsIdempotent(t *testing.T) {
+	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
+	release := &v1beta1.BatchRelease{
+		ObjectMeta: metav1.ObjectMeta{Name: "degraded-idempotent", Namespace: "default"},
+		Spec: v1beta1.BatchReleaseSpec{
+			WorkloadRef: v1beta1.ObjectRef{APIVersion: apps.SchemeGroupVersion.String(), Kind: "Deployment", Name: "demo"},
+			ReleasePlan: v1beta1.ReleasePlan{RollingStyle: v1beta1.PartitionRollingStyle},
+		},
+	}
+	brmetrics.DeleteMinReadyMetrics(release)
+	defer brmetrics.DeleteMinReadyMetrics(release)
+
+	status := &v1beta1.BatchReleaseStatus{}
+	recorder := record.NewFakeRecorder(4)
+	rc := &MinReadyStatusWriter{
+		release:  release,
+		status:   status,
+		recorder: recorder,
+	}
+
+	// A persistent error re-entering the control plane should only record the
+	// degraded transition once; subsequent calls with the same error must not
+	// flood the degraded counter, batch metric, or warning events.
+	err := fmt.Errorf("UpgradeBatch[1]: %w", ErrMinReadyDriftDetected)
+	rc.RecordDegraded("MinReadyBatchingFailed", err)
+	rc.RecordDegraded("MinReadyBatchingFailed", err)
+
+	if value := findCounterValue(t, "rollout_minready_degraded_total", map[string]string{
+		"rollout":   release.Name,
+		"namespace": release.Namespace,
+		"reason":    brmetrics.DegradedReasonGitOpsDrift,
+	}); value != 1 {
+		t.Fatalf("degraded counter = %v, want 1 after duplicate RecordDegraded", value)
+	}
+	if value := findCounterValue(t, "rollout_minready_batches_total", map[string]string{
+		"rollout":   release.Name,
+		"namespace": release.Namespace,
+		"result":    brmetrics.BatchResultDegraded,
+	}); value != 1 {
+		t.Fatalf("degraded batch counter = %v, want 1 after duplicate RecordDegraded", value)
+	}
+	events := 0
+	for {
+		select {
+		case <-recorder.Events:
+			events++
+		default:
+			if events != 1 {
+				t.Fatalf("events = %d, want 1 after duplicate RecordDegraded", events)
+			}
+			return
+		}
+	}
+}
+
 func TestRecordMinReadyNormalKeepsDegradedUntilFinalize(t *testing.T) {
 	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
 	release := &v1beta1.BatchRelease{
