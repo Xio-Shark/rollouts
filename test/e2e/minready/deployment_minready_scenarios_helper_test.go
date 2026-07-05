@@ -178,41 +178,45 @@ func setMinReadyE2EInitialReplicas(deployment *apps.Deployment, replicas int32) 
 }
 
 // expectMinReadyE2EDeploymentPodInvariants asserts that the native Kubernetes
-// Deployment controller respects the MaxSurge boundary and has rolled out at
-// least minUpdated pods with all updated pods reaching Ready. This verifies
-// the native controller behavior (not just the rollout controller's spec patch)
-// — the Deployment controller must actually create/terminate pods according to
-// the MaxSurge/MaxUnavailable boundaries the MinReady controller sets.
+// Deployment controller respects the MaxSurge boundary and that the MinReady
+// batch target is reached by Ready updated pods. A paused MinReady batch can
+// still have an extra in-flight updated pod from MaxSurge, so readiness is
+// checked against the batch target rather than every updated replica.
 func expectMinReadyE2EDeploymentPodInvariants(namespace, releaseName string, desired, maxSurge, minUpdated int32) {
-	Eventually(func() bool {
+	Eventually(func() string {
 		deployment := &apps.Deployment{}
 		key := types.NamespacedName{Namespace: namespace, Name: minReadyE2EDeploymentName}
 		Expect(k8sClient.Get(context.TODO(), key, deployment)).Should(Succeed())
 		release := &v1beta1.BatchRelease{}
 		Expect(k8sClient.Get(context.TODO(), types.NamespacedName{Namespace: namespace, Name: releaseName}, release)).Should(Succeed())
 		if release.Status.UpdateRevision == "" {
-			return false
+			return "update revision is empty"
 		}
-		updatedReady := minReadyE2EUpdatedReadyPods(namespace, deployment, release.Status.UpdateRevision)
-		// Surge invariant: total pods never exceed desired + MaxSurge.
-		if deployment.Status.Replicas > desired+maxSurge {
-			return false
+		podCounts := minReadyE2EDeploymentPodCounts(namespace, deployment, release.Status.UpdateRevision)
+		// Surge invariant: active pods never exceed desired + MaxSurge. The
+		// pod list can include terminating pods, especially on older Kubernetes
+		// versions, but terminating pods are no longer active rollout capacity.
+		if podCounts.active > desired+maxSurge {
+			return fmt.Sprintf("active=%d exceeds surgeBound=%d", podCounts.active, desired+maxSurge)
 		}
 		// Batch target reached: at least minUpdated pods rolled out.
 		if deployment.Status.UpdatedReplicas < minUpdated {
-			return false
+			return fmt.Sprintf("updatedReplicas=%d below minUpdated=%d", deployment.Status.UpdatedReplicas, minUpdated)
 		}
-		// MinReady controller only advances MaxUnavailable when pods become
-		// Ready, so every updated pod should be Ready at the paused state.
-		if updatedReady < deployment.Status.UpdatedReplicas {
-			return false
+		if podCounts.updatedReady < minUpdated {
+			return fmt.Sprintf("updatedReady=%d below minUpdated=%d", podCounts.updatedReady, minUpdated)
 		}
-		return true
-	}, 5*time.Minute, time.Second).Should(BeTrue(),
+		return ""
+	}, 5*time.Minute, time.Second).Should(BeEmpty(),
 		fmt.Sprintf("pod invariants not satisfied: want minUpdated=%d surgeBound=%d", minUpdated, desired+maxSurge))
 }
 
-func minReadyE2EUpdatedReadyPods(namespace string, deployment *apps.Deployment, updateRevision string) int32 {
+type minReadyE2EDeploymentPodCountsResult struct {
+	active       int32
+	updatedReady int32
+}
+
+func minReadyE2EDeploymentPodCounts(namespace string, deployment *apps.Deployment, updateRevision string) minReadyE2EDeploymentPodCountsResult {
 	pods := &corev1.PodList{}
 	listOptions := []client.ListOption{client.InNamespace(namespace)}
 	if deployment.Spec.Selector != nil {
@@ -221,18 +225,22 @@ func minReadyE2EUpdatedReadyPods(namespace string, deployment *apps.Deployment, 
 		listOptions = append(listOptions, client.MatchingLabelsSelector{Selector: selector})
 	}
 	Expect(k8sClient.List(context.TODO(), pods, listOptions...)).Should(Succeed())
-	updatedReady := int32(0)
+	result := minReadyE2EDeploymentPodCountsResult{}
 	for i := range pods.Items {
 		pod := &pods.Items[i]
-		if !util.IsPodActive(pod) || !util.IsConsistentWithRevision(pod.Labels, updateRevision) {
+		if !util.IsPodActive(pod) {
+			continue
+		}
+		result.active++
+		if !util.IsConsistentWithRevision(pod.Labels, updateRevision) {
 			continue
 		}
 		ready := util.GetPodReadyCondition(pod.Status)
 		if ready != nil && ready.Status == corev1.ConditionTrue {
-			updatedReady++
+			result.updatedReady++
 		}
 	}
-	return updatedReady
+	return result
 }
 
 // expectMinReadyE2EDeploymentFinalState asserts the native Deployment controller
