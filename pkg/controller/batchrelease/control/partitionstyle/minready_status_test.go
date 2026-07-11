@@ -48,7 +48,7 @@ func TestRecordMinReadyNormalObservesBatchDuration(t *testing.T) {
 	status := &v1beta1.BatchReleaseStatus{}
 	startedAt := metav1.NewTime(time.Now().Add(-3 * time.Second))
 	util.SetBatchReleaseCondition(status, v1beta1.RolloutCondition{
-		Type:               v1beta1.RolloutConditionMinReadyBatching,
+		Type:               v1beta1.RolloutConditionStrategyBatching,
 		Status:             v1.ConditionTrue,
 		Reason:             "MinReadyBatching",
 		Message:            "MinReadySeconds strategy advanced the current batch",
@@ -62,7 +62,7 @@ func TestRecordMinReadyNormalObservesBatchDuration(t *testing.T) {
 		recorder: record.NewFakeRecorder(1),
 	}
 
-	rc.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
+	rc.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
 
 	histogram := findHistogramMetric(t, "rollout_minready_batch_duration_seconds", map[string]string{
 		"rollout":   release.Name,
@@ -91,7 +91,7 @@ func TestRecordMinReadyBatchReadyIsIdempotent(t *testing.T) {
 	status := &v1beta1.BatchReleaseStatus{}
 	startedAt := metav1.NewTime(time.Now().Add(-3 * time.Second))
 	util.SetBatchReleaseCondition(status, v1beta1.RolloutCondition{
-		Type:               v1beta1.RolloutConditionMinReadyBatching,
+		Type:               v1beta1.RolloutConditionStrategyBatching,
 		Status:             v1.ConditionTrue,
 		Reason:             "MinReadyBatching",
 		Message:            "MinReadySeconds strategy advanced the current batch",
@@ -105,8 +105,8 @@ func TestRecordMinReadyBatchReadyIsIdempotent(t *testing.T) {
 		recorder: recorder,
 	}
 
-	rc.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
-	rc.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
+	rc.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
+	rc.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
 
 	if value := findCounterValue(t, "rollout_minready_batches_total", map[string]string{
 		"rollout":   release.Name,
@@ -184,6 +184,119 @@ func TestRecordMinReadyDegradedIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRecordMinReadyDegradedSuppressesMessageOnlySideEffects(t *testing.T) {
+	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
+	release := &v1beta1.BatchRelease{
+		ObjectMeta: metav1.ObjectMeta{Name: "degraded-message-change", Namespace: "default"},
+		Spec: v1beta1.BatchReleaseSpec{
+			WorkloadRef: v1beta1.ObjectRef{APIVersion: apps.SchemeGroupVersion.String(), Kind: "Deployment", Name: "demo"},
+			ReleasePlan: v1beta1.ReleasePlan{RollingStyle: v1beta1.PartitionRollingStyle},
+		},
+	}
+	brmetrics.DeleteMinReadyMetrics(release)
+	defer brmetrics.DeleteMinReadyMetrics(release)
+
+	status := &v1beta1.BatchReleaseStatus{}
+	recorder := record.NewFakeRecorder(4)
+	rc := &MinReadyStatusWriter{
+		release:  release,
+		status:   status,
+		recorder: recorder,
+	}
+
+	rc.RecordDegraded("MinReadyBatchingFailed", errors.New("controller error attempt=1"))
+	rc.RecordDegraded("MinReadyBatchingFailed", errors.New("controller error attempt=2"))
+
+	if value := findCounterValue(t, "rollout_minready_degraded_total", map[string]string{
+		"rollout":   release.Name,
+		"namespace": release.Namespace,
+		"reason":    brmetrics.DegradedReasonControllerError,
+	}); value != 1 {
+		t.Fatalf("degraded counter = %v, want 1 after message-only change", value)
+	}
+	if value := findCounterValue(t, "rollout_minready_batches_total", map[string]string{
+		"rollout":   release.Name,
+		"namespace": release.Namespace,
+		"result":    brmetrics.BatchResultDegraded,
+	}); value != 1 {
+		t.Fatalf("degraded batch counter = %v, want 1 after message-only change", value)
+	}
+	condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionStrategyDegraded)
+	if condition == nil || condition.Message != "controller error attempt=2" {
+		t.Fatalf("degraded condition message = %v, want latest message", condition)
+	}
+	if status.Message != "controller error attempt=2" {
+		t.Fatalf("status.message = %q, want latest message", status.Message)
+	}
+	events := 0
+	for {
+		select {
+		case <-recorder.Events:
+			events++
+		default:
+			if events != 1 {
+				t.Fatalf("events = %d, want 1 after message-only change", events)
+			}
+			return
+		}
+	}
+}
+
+func TestRecordMinReadyDegradedCountsReasonTransition(t *testing.T) {
+	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
+	release := &v1beta1.BatchRelease{
+		ObjectMeta: metav1.ObjectMeta{Name: "degraded-reason-transition", Namespace: "default"},
+		Spec: v1beta1.BatchReleaseSpec{
+			WorkloadRef: v1beta1.ObjectRef{APIVersion: apps.SchemeGroupVersion.String(), Kind: "Deployment", Name: "demo"},
+			ReleasePlan: v1beta1.ReleasePlan{RollingStyle: v1beta1.PartitionRollingStyle},
+		},
+	}
+	brmetrics.DeleteMinReadyMetrics(release)
+	defer brmetrics.DeleteMinReadyMetrics(release)
+
+	status := &v1beta1.BatchReleaseStatus{}
+	recorder := record.NewFakeRecorder(4)
+	rc := &MinReadyStatusWriter{
+		release:  release,
+		status:   status,
+		recorder: recorder,
+	}
+
+	rc.RecordDegraded("MinReadyBatchingFailed", errors.New("controller error during batching"))
+	rc.RecordDegraded("MinReadyFinalizeFailed", errors.New("controller error during finalize"))
+
+	if value := findCounterValue(t, "rollout_minready_degraded_total", map[string]string{
+		"rollout":   release.Name,
+		"namespace": release.Namespace,
+		"reason":    brmetrics.DegradedReasonControllerError,
+	}); value != 2 {
+		t.Fatalf("degraded counter = %v, want 2 after reason transition", value)
+	}
+	if value := findCounterValue(t, "rollout_minready_batches_total", map[string]string{
+		"rollout":   release.Name,
+		"namespace": release.Namespace,
+		"result":    brmetrics.BatchResultDegraded,
+	}); value != 2 {
+		t.Fatalf("degraded batch counter = %v, want 2 after reason transition", value)
+	}
+	condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionStrategyDegraded)
+	if condition == nil || condition.Reason != "MinReadyFinalizeFailed" {
+		t.Fatalf("degraded condition = %#v, want finalize reason", condition)
+	}
+	events := 0
+	for {
+		select {
+		case <-recorder.Events:
+			events++
+		default:
+			if events != 2 {
+				t.Fatalf("events = %d, want 2 after reason transition", events)
+			}
+			return
+		}
+	}
+}
+
 func TestRecordMinReadyNormalKeepsDegradedUntilFinalize(t *testing.T) {
 	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
 	release := &v1beta1.BatchRelease{
@@ -195,7 +308,7 @@ func TestRecordMinReadyNormalKeepsDegradedUntilFinalize(t *testing.T) {
 	}
 	status := &v1beta1.BatchReleaseStatus{Message: "annotation missing"}
 	util.SetBatchReleaseCondition(status, v1beta1.RolloutCondition{
-		Type:   v1beta1.RolloutConditionMinReadyDegraded,
+		Type:   v1beta1.RolloutConditionStrategyDegraded,
 		Status: v1.ConditionTrue,
 		Reason: "MinReadyDegradedMissingAnnotations",
 	})
@@ -205,14 +318,14 @@ func TestRecordMinReadyNormalKeepsDegradedUntilFinalize(t *testing.T) {
 		recorder: record.NewFakeRecorder(2),
 	}
 
-	rc.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatching", "MinReadySeconds strategy advanced the current batch")
+	rc.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatching", "MinReadySeconds strategy advanced the current batch")
 	select {
 	case event := <-rc.recorder.(*record.FakeRecorder).Events:
 		t.Fatalf("unexpected MinReadyBatching event: %s", event)
 	default:
 	}
 
-	degraded := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionMinReadyDegraded)
+	degraded := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionStrategyDegraded)
 	if degraded == nil || degraded.Status != v1.ConditionTrue {
 		t.Fatalf("degraded condition = %v, want still true after batching", degraded)
 	}
@@ -220,9 +333,9 @@ func TestRecordMinReadyNormalKeepsDegradedUntilFinalize(t *testing.T) {
 		t.Fatalf("status.message = %q, want previous degraded message", status.Message)
 	}
 
-	rc.RecordNormal(v1beta1.RolloutConditionMinReadyFinalized, "MinReadyFinalized", "MinReadySeconds strategy finalized")
+	rc.RecordNormal(v1beta1.RolloutConditionStrategyFinalized, "MinReadyFinalized", "MinReadySeconds strategy finalized")
 
-	degraded = util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionMinReadyDegraded)
+	degraded = util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionStrategyDegraded)
 	if degraded == nil || degraded.Status != v1.ConditionFalse {
 		t.Fatalf("degraded condition = %v, want false after finalize", degraded)
 	}
@@ -237,7 +350,7 @@ func TestObserveMinReadyBatchWaitSetsStuckGauge(t *testing.T) {
 	}
 	startedAt := metav1.NewTime(time.Now().Add(-4 * time.Second))
 	condition := &v1beta1.RolloutCondition{
-		Type:               v1beta1.RolloutConditionMinReadyBatching,
+		Type:               v1beta1.RolloutConditionStrategyBatching,
 		Status:             v1.ConditionTrue,
 		Reason:             "MinReadyBatching",
 		Message:            "MinReadySeconds strategy advanced the current batch",

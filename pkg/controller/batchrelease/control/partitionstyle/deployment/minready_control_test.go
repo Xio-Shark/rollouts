@@ -178,6 +178,24 @@ func TestMinReadyInitializeRejectsFeatureGateDisabled(t *testing.T) {
 	}
 }
 
+func TestMinReadyInitializeAllowsOriginalAnnotationsAfterFeatureGateDisabled(t *testing.T) {
+	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=false")
+	deployment := newInflatedMinReadyDeployment()
+	addMinReadyOriginalAnnotations(deployment)
+	control := newBuiltMinReadyControl(t, deployment)
+
+	if err := control.Initialize(context.Background(), releaseDemo.DeepCopy()); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	got := fetchMinReadyDeployment(t, control)
+	assertMinReadyInflated(t, got)
+	assertAnnotation(t, got.Annotations, AnnotationOriginalMinReadySeconds, "7")
+	assertAnnotation(t, got.Annotations, AnnotationOriginalProgressDeadlineSeconds, "60")
+	assertAnnotation(t, got.Annotations, AnnotationOriginalMaxUnavailable, "25%")
+	assertAnnotation(t, got.Annotations, util.BatchReleaseControlAnnotation, getControlInfo(releaseDemo))
+}
+
 func TestMinReadyInitializeAllowsCoveringPDB(t *testing.T) {
 	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
 	deployment := newMinReadyDeployment()

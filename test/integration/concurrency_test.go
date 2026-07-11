@@ -62,7 +62,7 @@ func TestDeploymentMinReadyConcurrentScaleUsesLatestReplicas(t *testing.T) {
 	if unavailable := got.Spec.Strategy.RollingUpdate.MaxUnavailable; unavailable == nil || unavailable.IntVal != 5 {
 		t.Fatalf("maxUnavailable = %v, want 5 (sliding-window first step = 25%% of 20 replicas) after scale to 20 replicas", unavailable)
 	}
-	assertIntegrationCondition(t, status, v1beta1.RolloutConditionMinReadyBatching, corev1.ConditionTrue, "MinReadyBatching")
+	assertIntegrationCondition(t, status, v1beta1.RolloutConditionStrategyBatching, corev1.ConditionTrue, "MinReadyBatching")
 }
 
 func TestDeploymentMinReadyConcurrentMaxUnavailableAboveTargetSelfHeals(t *testing.T) {
@@ -89,7 +89,7 @@ func TestDeploymentMinReadyConcurrentMaxUnavailableAboveTargetSelfHeals(t *testi
 	if unavailable := got.Spec.Strategy.RollingUpdate.MaxUnavailable; unavailable == nil || unavailable.IntVal != 5 {
 		t.Fatalf("maxUnavailable = %v, want target value 5", unavailable)
 	}
-	if degraded := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionMinReadyDegraded); degraded != nil {
+	if degraded := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionStrategyDegraded); degraded != nil {
 		t.Fatalf("degraded condition = %v, want nil", degraded)
 	}
 }
@@ -113,7 +113,7 @@ func TestDeploymentMinReadyConcurrentAnnotationDeletionBlocksFinalize(t *testing
 	if got.Spec.MinReadySeconds != partitiondeployment.InflatedMinReadySeconds {
 		t.Fatalf("minReadySeconds = %d, want inflated value preserved", got.Spec.MinReadySeconds)
 	}
-	assertIntegrationCondition(t, status, v1beta1.RolloutConditionMinReadyDegraded, corev1.ConditionTrue, "MinReadyDegradedMissingAnnotations")
+	assertIntegrationCondition(t, status, v1beta1.RolloutConditionStrategyDegraded, corev1.ConditionTrue, "MinReadyDegradedMissingAnnotations")
 	assertIntegrationEvent(t, recorder, "MinReadyDegradedMissingAnnotations")
 }
 

@@ -295,10 +295,10 @@ func cleanupMinReadyMetricsOnFinalizerRemoval(release *v1beta1.BatchRelease) {
 func hasMinReadyStatusCondition(conditions []v1beta1.RolloutCondition) bool {
 	for _, condition := range conditions {
 		switch condition.Type {
-		case v1beta1.RolloutConditionMinReadyInitialized,
-			v1beta1.RolloutConditionMinReadyBatching,
-			v1beta1.RolloutConditionMinReadyDegraded,
-			v1beta1.RolloutConditionMinReadyFinalized:
+		case v1beta1.RolloutConditionStrategyInitialized,
+			v1beta1.RolloutConditionStrategyBatching,
+			v1beta1.RolloutConditionStrategyDegraded,
+			v1beta1.RolloutConditionStrategyFinalized:
 			return true
 		}
 	}

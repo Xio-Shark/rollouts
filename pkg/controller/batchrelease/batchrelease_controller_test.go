@@ -882,7 +882,7 @@ func TestMinReadyControlPlaneRecordsInitializedConditionAndEvent(t *testing.T) {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	assertCondition(t, status, v1beta1.RolloutConditionMinReadyInitialized, corev1.ConditionTrue, "MinReadyInitialized")
+	assertCondition(t, status, v1beta1.RolloutConditionStrategyInitialized, corev1.ConditionTrue, "MinReadyInitialized")
 	assertRecordedEvent(t, rec, "MinReadyInitialized")
 }
 
@@ -913,7 +913,7 @@ func TestMinReadyControlPlaneAllowsPDBCoexistence(t *testing.T) {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	assertCondition(t, status, v1beta1.RolloutConditionMinReadyInitialized, corev1.ConditionTrue, "MinReadyInitialized")
+	assertCondition(t, status, v1beta1.RolloutConditionStrategyInitialized, corev1.ConditionTrue, "MinReadyInitialized")
 }
 
 func BenchmarkRecreateReconcile(b *testing.B) {
@@ -1282,7 +1282,7 @@ func TestMinReadyDeletionReconcileCleanupsMetricsAndRestoresDeployment(t *testin
 	}
 	found := false
 	for _, cond := range br.Status.Conditions {
-		if cond.Type == v1beta1.RolloutConditionMinReadyFinalized &&
+		if cond.Type == v1beta1.RolloutConditionStrategyFinalized &&
 			cond.Status == corev1.ConditionTrue && cond.Reason == "MinReadyFinalized" {
 			found = true
 		}
@@ -1300,7 +1300,7 @@ func TestMinReadyFinalizerRemovalCleansMetricsWhenWorkloadAlreadyGone(t *testing
 	release.Name = "release-workload-gone"
 	release.Status.Phase = v1beta1.RolloutPhaseCompleted
 	release.Status.Conditions = []v1beta1.RolloutCondition{{
-		Type:   v1beta1.RolloutConditionMinReadyBatching,
+		Type:   v1beta1.RolloutConditionStrategyBatching,
 		Status: corev1.ConditionTrue,
 		Reason: "MinReadyBatching",
 	}}

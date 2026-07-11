@@ -143,10 +143,20 @@ func (w *MinReadyStatusWriter) RecordDegraded(reason string, err error) {
 	message := err.Error()
 	classified := classifyMinReadyDegradedReason(reason, err)
 	eventReason := classified.event
-	condition := util.NewRolloutCondition(v1beta1.RolloutConditionMinReadyDegraded, v1.ConditionTrue, eventReason, message)
-	// Only record metrics/counters/events on an actual condition transition,
-	// so a persistent error re-entering the control plane does not flood
-	// warning events and degraded metrics. Mirrors RecordNormal semantics.
+	previousCondition := util.GetBatchReleaseCondition(*w.status, v1beta1.RolloutConditionStrategyDegraded)
+	sameDegradedReason := previousCondition != nil &&
+		previousCondition.Status == v1.ConditionTrue &&
+		previousCondition.Reason == eventReason
+	// Error text can include retry/object details. A recurring degraded reason
+	// is not a new transition, even when the human-readable message changes.
+	if sameDegradedReason {
+		condition := util.NewRolloutCondition(v1beta1.RolloutConditionStrategyDegraded, v1.ConditionTrue, eventReason, message)
+		util.SetBatchReleaseCondition(w.status, *condition)
+		w.status.Message = message
+		brmetrics.ClearMinReadyStuckSeconds(w.release, brmetrics.StuckReasonBatchReadyTimeout)
+		return
+	}
+	condition := util.NewRolloutCondition(v1beta1.RolloutConditionStrategyDegraded, v1.ConditionTrue, eventReason, message)
 	updated := util.SetBatchReleaseCondition(w.status, *condition)
 	if !updated {
 		return
@@ -184,7 +194,7 @@ func ObserveMinReadyBatchWait(release *v1beta1.BatchRelease, condition *v1beta1.
 }
 
 func clearMinReadyDegraded(status *v1beta1.BatchReleaseStatus) {
-	condition := util.NewRolloutCondition(v1beta1.RolloutConditionMinReadyDegraded, v1.ConditionFalse, "MinReadyHealthy", "")
+	condition := util.NewRolloutCondition(v1beta1.RolloutConditionStrategyDegraded, v1.ConditionFalse, "MinReadyHealthy", "")
 	util.SetBatchReleaseCondition(status, *condition)
 }
 

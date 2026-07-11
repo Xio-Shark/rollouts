@@ -75,37 +75,37 @@ func (mc *MinReadyControl) FailureReason(operation partitionstyle.StrategyOperat
 
 func (mc *MinReadyControl) RecordZeroReplicaBatching() {
 	if mc.statusWriter != nil {
-		mc.statusWriter.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatching", "MinReadySeconds strategy has no replicas to upgrade")
+		mc.statusWriter.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatching", "MinReadySeconds strategy has no replicas to upgrade")
 	}
 }
 
 func (mc *MinReadyControl) RecordBatchAdvanced() {
 	if mc.statusWriter != nil {
-		mc.statusWriter.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatching", "MinReadySeconds strategy advanced the current batch")
+		mc.statusWriter.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatching", "MinReadySeconds strategy advanced the current batch")
 	}
 }
 
 func (mc *MinReadyControl) RecordZeroReplicaBatchReady() {
 	if mc.statusWriter != nil {
-		mc.statusWriter.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
+		mc.statusWriter.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
 	}
 }
 
 func (mc *MinReadyControl) RecordBatchReady() {
 	if mc.statusWriter != nil {
-		mc.statusWriter.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
+		mc.statusWriter.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
 	}
 }
 
 func (mc *MinReadyControl) RecordInitialized() {
 	if mc.statusWriter != nil {
-		mc.statusWriter.RecordNormal(v1beta1.RolloutConditionMinReadyInitialized, "MinReadyInitialized", "MinReadySeconds strategy initialized")
+		mc.statusWriter.RecordNormal(v1beta1.RolloutConditionStrategyInitialized, "MinReadyInitialized", "MinReadySeconds strategy initialized")
 	}
 }
 
 func (mc *MinReadyControl) RecordFinalized() {
 	if mc.statusWriter != nil {
-		mc.statusWriter.RecordNormal(v1beta1.RolloutConditionMinReadyFinalized, "MinReadyFinalized", "MinReadySeconds strategy finalized")
+		mc.statusWriter.RecordNormal(v1beta1.RolloutConditionStrategyFinalized, "MinReadyFinalized", "MinReadySeconds strategy finalized")
 	}
 }
 
@@ -117,7 +117,7 @@ func (mc *MinReadyControl) ObserveBatchWait() {
 	if status == nil {
 		return
 	}
-	condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionMinReadyBatching)
+	condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionStrategyBatching)
 	partitionstyle.ObserveMinReadyBatchWait(mc.statusWriter.BatchRelease(), condition)
 }
 
@@ -350,7 +350,7 @@ func (mc *MinReadyControl) ensureInitializeAllowed() error {
 	if mc.realController == nil || mc.object == nil {
 		return fmt.Errorf("deployment is not loaded")
 	}
-	if !utilfeature.DefaultFeatureGate.Enabled(feature.MinReadySecondsStrategy) {
+	if !utilfeature.DefaultFeatureGate.Enabled(feature.MinReadySecondsStrategy) && !hasAnyOriginalAnnotation(mc.object.Annotations) {
 		return fmt.Errorf("%s %w", feature.MinReadySecondsStrategy, partitionstyle.ErrMinReadyFeatureGateDisabled)
 	}
 	if err := validateDeploymentStrategyType(mc.object); err != nil {

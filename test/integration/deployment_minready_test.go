@@ -55,7 +55,7 @@ func TestDeploymentMinReadyControlPlaneUpgradeBatchUsesUpdatedReadyReplicas(t *t
 	if unavailable := got.Spec.Strategy.RollingUpdate.MaxUnavailable; unavailable == nil || unavailable.IntVal != 5 {
 		t.Fatalf("maxUnavailable = %v, want 5", unavailable)
 	}
-	assertIntegrationCondition(t, status, v1beta1.RolloutConditionMinReadyBatching, corev1.ConditionTrue, "MinReadyBatchReady")
+	assertIntegrationCondition(t, status, v1beta1.RolloutConditionStrategyBatching, corev1.ConditionTrue, "MinReadyBatchReady")
 	assertIntegrationEvent(t, recorder, "MinReadyBatchReady")
 }
 
@@ -113,6 +113,6 @@ func TestDeploymentMinReadyControlPlaneFinalizeRestoresOriginalFields(t *testing
 			t.Fatalf("annotation %s still exists", key)
 		}
 	}
-	assertIntegrationCondition(t, status, v1beta1.RolloutConditionMinReadyFinalized, corev1.ConditionTrue, "MinReadyFinalized")
+	assertIntegrationCondition(t, status, v1beta1.RolloutConditionStrategyFinalized, corev1.ConditionTrue, "MinReadyFinalized")
 	assertIntegrationEvent(t, recorder, "MinReadyFinalized")
 }

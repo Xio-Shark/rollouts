@@ -107,37 +107,37 @@ func (f *fakePartitionController) FailureReason(operation StrategyOperation) str
 
 func (f *fakePartitionController) RecordZeroReplicaBatching() {
 	if f.statusWriter != nil {
-		f.statusWriter.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatching", "MinReadySeconds strategy has no replicas to upgrade")
+		f.statusWriter.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatching", "MinReadySeconds strategy has no replicas to upgrade")
 	}
 }
 
 func (f *fakePartitionController) RecordBatchAdvanced() {
 	if f.statusWriter != nil {
-		f.statusWriter.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatching", "MinReadySeconds strategy advanced the current batch")
+		f.statusWriter.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatching", "MinReadySeconds strategy advanced the current batch")
 	}
 }
 
 func (f *fakePartitionController) RecordZeroReplicaBatchReady() {
 	if f.statusWriter != nil {
-		f.statusWriter.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
+		f.statusWriter.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
 	}
 }
 
 func (f *fakePartitionController) RecordBatchReady() {
 	if f.statusWriter != nil {
-		f.statusWriter.RecordNormal(v1beta1.RolloutConditionMinReadyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
+		f.statusWriter.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
 	}
 }
 
 func (f *fakePartitionController) RecordInitialized() {
 	if f.statusWriter != nil {
-		f.statusWriter.RecordNormal(v1beta1.RolloutConditionMinReadyInitialized, "MinReadyInitialized", "MinReadySeconds strategy initialized")
+		f.statusWriter.RecordNormal(v1beta1.RolloutConditionStrategyInitialized, "MinReadyInitialized", "MinReadySeconds strategy initialized")
 	}
 }
 
 func (f *fakePartitionController) RecordFinalized() {
 	if f.statusWriter != nil {
-		f.statusWriter.RecordNormal(v1beta1.RolloutConditionMinReadyFinalized, "MinReadyFinalized", "MinReadySeconds strategy finalized")
+		f.statusWriter.RecordNormal(v1beta1.RolloutConditionStrategyFinalized, "MinReadyFinalized", "MinReadySeconds strategy finalized")
 	}
 }
 
@@ -149,7 +149,7 @@ func (f *fakePartitionController) ObserveBatchWait() {
 	if status == nil {
 		return
 	}
-	condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionMinReadyBatching)
+	condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionStrategyBatching)
 	ObserveMinReadyBatchWait(f.statusWriter.BatchRelease(), condition)
 }
 
@@ -252,7 +252,7 @@ func TestControlPlaneInitializeRecordsMinReadyWorkloadInfo(t *testing.T) {
 	if status.StableRevision != "stable" || status.UpdateRevision != "update" || status.ObservedWorkloadReplicas != 5 {
 		t.Fatalf("status revisions/replicas not updated: %#v", status)
 	}
-	condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionMinReadyInitialized)
+	condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionStrategyInitialized)
 	if condition == nil || condition.Reason != "MinReadyInitialized" {
 		t.Fatalf("MinReadyInitialized condition = %#v", condition)
 	}
@@ -273,7 +273,7 @@ func TestControlPlaneUpgradeBatchMinReadyPaths(t *testing.T) {
 		if controller.upgradeCalls != 0 {
 			t.Fatalf("upgradeCalls = %d, want 0", controller.upgradeCalls)
 		}
-		condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionMinReadyBatching)
+		condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionStrategyBatching)
 		if condition == nil || condition.Reason != "MinReadyBatching" {
 			t.Fatalf("MinReadyBatching condition = %#v", condition)
 		}
@@ -292,7 +292,7 @@ func TestControlPlaneUpgradeBatchMinReadyPaths(t *testing.T) {
 		if controller.calculateCalls != 1 || controller.upgradeCalls != 1 || patcher.calls != 1 {
 			t.Fatalf("calls calculate=%d upgrade=%d patch=%d, want 1/1/1", controller.calculateCalls, controller.upgradeCalls, patcher.calls)
 		}
-		condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionMinReadyBatching)
+		condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionStrategyBatching)
 		if condition == nil || condition.Reason != "MinReadyBatching" {
 			t.Fatalf("MinReadyBatching condition = %#v", condition)
 		}
@@ -309,7 +309,7 @@ func TestControlPlaneUpgradeBatchMinReadyPaths(t *testing.T) {
 		if err := rc.UpgradeBatch(); err == nil {
 			t.Fatalf("UpgradeBatch() error = nil, want error")
 		}
-		condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionMinReadyDegraded)
+		condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionStrategyDegraded)
 		if condition == nil || condition.Reason != "MinReadyDegradedDriftDetected" {
 			t.Fatalf("MinReadyDegraded condition = %#v", condition)
 		}
@@ -332,7 +332,7 @@ func TestControlPlaneEnsureBatchPodsReadyAndLabeled(t *testing.T) {
 		now := metav1.Now()
 		status := &v1beta1.BatchReleaseStatus{
 			Conditions: []v1beta1.RolloutCondition{{
-				Type:               v1beta1.RolloutConditionMinReadyBatching,
+				Type:               v1beta1.RolloutConditionStrategyBatching,
 				Status:             corev1.ConditionTrue,
 				LastTransitionTime: now,
 			}},
@@ -348,7 +348,7 @@ func TestControlPlaneEnsureBatchPodsReadyAndLabeled(t *testing.T) {
 		if controller.reconcileCalls != 1 {
 			t.Fatalf("reconcileCalls = %d, want 1", controller.reconcileCalls)
 		}
-		if degraded := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionMinReadyDegraded); degraded != nil {
+		if degraded := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionStrategyDegraded); degraded != nil {
 			t.Fatalf("MinReadyDegraded condition = %#v, want nil for normal batch wait", degraded)
 		}
 	})
@@ -361,7 +361,7 @@ func TestControlPlaneEnsureBatchPodsReadyAndLabeled(t *testing.T) {
 		if err := rc.EnsureBatchPodsReadyAndLabeled(); err != nil {
 			t.Fatalf("EnsureBatchPodsReadyAndLabeled() error = %v", err)
 		}
-		condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionMinReadyBatching)
+		condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionStrategyBatching)
 		if condition == nil || condition.Reason != "MinReadyBatchReady" {
 			t.Fatalf("MinReadyBatchReady condition = %#v", condition)
 		}
@@ -381,7 +381,7 @@ func TestControlPlaneEnsureBatchPodsReadyAndLabeled(t *testing.T) {
 		if controller.reconcileCalls != 1 {
 			t.Fatalf("reconcileCalls = %d, want 1", controller.reconcileCalls)
 		}
-		condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionMinReadyDegraded)
+		condition := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionStrategyDegraded)
 		if condition == nil || condition.Reason != "MinReadyDegradedDriftDetected" {
 			t.Fatalf("MinReadyDegraded condition = %#v", condition)
 		}
@@ -405,7 +405,7 @@ func TestControlPlaneFinalizeMinReadyPaths(t *testing.T) {
 		status := &v1beta1.BatchReleaseStatus{
 			Message: "previous degraded",
 			Conditions: []v1beta1.RolloutCondition{{
-				Type:   v1beta1.RolloutConditionMinReadyDegraded,
+				Type:   v1beta1.RolloutConditionStrategyDegraded,
 				Status: corev1.ConditionTrue,
 				Reason: "MinReadyDegradedDriftDetected",
 			}},
@@ -418,11 +418,11 @@ func TestControlPlaneFinalizeMinReadyPaths(t *testing.T) {
 		if controller.finalizeCalls != 1 {
 			t.Fatalf("finalizeCalls = %d, want 1", controller.finalizeCalls)
 		}
-		finalized := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionMinReadyFinalized)
+		finalized := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionStrategyFinalized)
 		if finalized == nil || finalized.Reason != "MinReadyFinalized" {
 			t.Fatalf("MinReadyFinalized condition = %#v", finalized)
 		}
-		degraded := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionMinReadyDegraded)
+		degraded := util.GetBatchReleaseCondition(*status, v1beta1.RolloutConditionStrategyDegraded)
 		if degraded == nil || degraded.Status != corev1.ConditionFalse {
 			t.Fatalf("MinReadyDegraded condition = %#v, want false", degraded)
 		}
