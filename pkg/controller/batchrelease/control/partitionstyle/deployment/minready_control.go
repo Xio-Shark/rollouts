@@ -50,14 +50,12 @@ func (mc *MinReadyControl) BindStrategyStatus(release *v1beta1.BatchRelease, sta
 	mc.statusWriter = partitionstyle.NewMinReadyStatusWriter(release, status, recorder)
 }
 
-func (mc *MinReadyControl) BindMinReadyStatus(release *v1beta1.BatchRelease, status *v1beta1.BatchReleaseStatus, recorder record.EventRecorder) {
-	mc.BindStrategyStatus(release, status, recorder)
-}
-
 func (mc *MinReadyControl) RecordOperationFailed(reason string, err error) {
-	if mc.statusWriter != nil {
-		mc.statusWriter.RecordDegraded(reason, err)
+	if mc.statusWriter == nil {
+		klog.V(3).InfoS("MinReadyControl.RecordOperationFailed: statusWriter is nil, degraded condition will not be recorded", "reason", reason, "err", err)
+		return
 	}
+	mc.statusWriter.RecordDegraded(reason, err)
 }
 
 func (mc *MinReadyControl) FailureReason(operation partitionstyle.StrategyOperation) string {
@@ -86,15 +84,15 @@ func (mc *MinReadyControl) RecordBatchAdvanced() {
 }
 
 func (mc *MinReadyControl) RecordZeroReplicaBatchReady() {
-	if mc.statusWriter != nil {
-		mc.statusWriter.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
-	}
+	mc.RecordBatchReady()
 }
 
 func (mc *MinReadyControl) RecordBatchReady() {
-	if mc.statusWriter != nil {
-		mc.statusWriter.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
+	if mc.statusWriter == nil {
+		klog.V(3).InfoS("MinReadyControl.RecordBatchReady: statusWriter is nil, BindStrategyStatus may not have been called")
+		return
 	}
+	mc.statusWriter.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
 }
 
 func (mc *MinReadyControl) RecordInitialized() {
@@ -478,7 +476,6 @@ var EventDegradedDriftDetected = partitionstyle.ErrMinReadyDriftDetected.Error()
 
 var _ partitionstyle.Interface = (*MinReadyControl)(nil)
 var _ partitionstyle.StrategyStatusBinder = (*MinReadyControl)(nil)
-var _ partitionstyle.MinReadyStatusBinder = (*MinReadyControl)(nil)
 var _ partitionstyle.StrategyLifecycle = (*MinReadyControl)(nil)
 var _ partitionstyle.StrategyFailureReasoner = (*MinReadyControl)(nil)
 var _ partitionstyle.MinReadyDriftReconciler = (*MinReadyControl)(nil)

@@ -36,12 +36,6 @@ type StrategyStatusBinder interface {
 	BindStrategyStatus(release *v1beta1.BatchRelease, status *v1beta1.BatchReleaseStatus, recorder record.EventRecorder)
 }
 
-// MinReadyStatusBinder is kept for compatibility with older MinReady-specific
-// implementations. The control plane uses StrategyStatusBinder.
-type MinReadyStatusBinder interface {
-	BindMinReadyStatus(release *v1beta1.BatchRelease, status *v1beta1.BatchReleaseStatus, recorder record.EventRecorder)
-}
-
 // StrategyLifecycle records strategy-specific status from control-plane batch
 // paths that are not Initialize/UpgradeBatch/Finalize.
 type StrategyLifecycle interface {
@@ -68,8 +62,6 @@ const (
 type StrategyFailureReasoner interface {
 	FailureReason(operation StrategyOperation) string
 }
-
-type MinReadyLifecycle = StrategyLifecycle
 
 // MinReadyDriftReconciler converges inflated maxUnavailable back to the active
 // batch target. EnsureBatchPodsReadyAndLabeled calls it so external drift is

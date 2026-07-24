@@ -118,9 +118,7 @@ func (f *fakePartitionController) RecordBatchAdvanced() {
 }
 
 func (f *fakePartitionController) RecordZeroReplicaBatchReady() {
-	if f.statusWriter != nil {
-		f.statusWriter.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
-	}
+	f.RecordBatchReady()
 }
 
 func (f *fakePartitionController) RecordBatchReady() {
