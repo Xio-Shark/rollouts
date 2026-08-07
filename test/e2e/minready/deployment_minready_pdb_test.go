@@ -18,7 +18,6 @@ package minready
 
 import (
 	"context"
-	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -47,7 +46,7 @@ var _ = SIGDescribe("Deployment MinReadySeconds PDB", func() {
 		_ = k8sClient.DeleteAllOf(context.TODO(), &policyv1.PodDisruptionBudget{}, client.InNamespace(namespace))
 		_ = k8sClient.DeleteAllOf(context.TODO(), &apps.Deployment{}, client.InNamespace(namespace))
 		Expect(k8sClient.Delete(context.TODO(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})).Should(Succeed())
-		time.Sleep(3 * time.Second)
+		waitMinReadyE2ENamespaceGone(namespace)
 	})
 
 	KruiseDescribe("MinReadySeconds PDB coexistence", func() {

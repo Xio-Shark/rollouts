@@ -18,7 +18,6 @@ package minready
 
 import (
 	"context"
-	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -45,7 +44,7 @@ var _ = SIGDescribe("Deployment MinReadySeconds", func() {
 		_ = k8sClient.DeleteAllOf(context.TODO(), &v1beta1.Rollout{}, client.InNamespace(namespace))
 		_ = k8sClient.DeleteAllOf(context.TODO(), &apps.Deployment{}, client.InNamespace(namespace))
 		Expect(k8sClient.Delete(context.TODO(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})).Should(Succeed())
-		time.Sleep(3 * time.Second)
+		waitMinReadyE2ENamespaceGone(namespace)
 	})
 
 	KruiseDescribe("MinReadySeconds deployment rollout", func() {

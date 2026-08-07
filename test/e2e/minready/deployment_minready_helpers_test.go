@@ -40,6 +40,16 @@ import (
 
 const minReadyE2EDeploymentName = "minready-demo"
 
+// waitMinReadyE2ENamespaceGone polls until the namespace has been deleted,
+// replacing fixed sleeps after teardown deletes.
+func waitMinReadyE2ENamespaceGone(namespace string) {
+	Eventually(func() bool {
+		ns := &corev1.Namespace{}
+		err := k8sClient.Get(context.TODO(), types.NamespacedName{Name: namespace}, ns)
+		return apierrors.IsNotFound(err)
+	}, 1*time.Minute, time.Second).Should(BeTrue())
+}
+
 func newMinReadyE2EDeployment(namespace string) *apps.Deployment {
 	maxUnavailable := intstr.FromString("25%")
 	maxSurge := intstr.FromInt(1)
