@@ -28,6 +28,7 @@ import (
 	"k8s.io/utils/pointer"
 
 	batchcontext "github.com/openkruise/rollouts/pkg/controller/batchrelease/context"
+	"github.com/openkruise/rollouts/pkg/controller/batchrelease/control/partitionstyle"
 	"github.com/openkruise/rollouts/pkg/feature"
 	"github.com/openkruise/rollouts/pkg/util"
 	utilfeature "github.com/openkruise/rollouts/pkg/util/feature"
@@ -242,6 +243,13 @@ func TestMinReadyUpgradeBatchUpdatesMaxUnavailableOnly(t *testing.T) {
 	}
 }
 
+// eventDegradedDriftDetected is the warning event reason recorded when
+// external drift of the inflated fields is detected. It equals the sentinel
+// error text so events, metrics and errors.Is classification stay in sync.
+// It is a test fixture: production code classifies drift via errors.Is on
+// partitionstyle.ErrMinReadyDriftDetected instead.
+var eventDegradedDriftDetected = partitionstyle.ErrMinReadyDriftDetected.Error()
+
 func TestMinReadyUpgradeBatchRejectsStrategyTypeDrift(t *testing.T) {
 	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
 	deployment := newInflatedMinReadyDeployment()
@@ -255,7 +263,7 @@ func TestMinReadyUpgradeBatchRejectsStrategyTypeDrift(t *testing.T) {
 	}
 
 	err := control.UpgradeBatch(context.Background(), ctx)
-	if err == nil || !strings.Contains(err.Error(), EventDegradedDriftDetected) {
+	if err == nil || !strings.Contains(err.Error(), eventDegradedDriftDetected) {
 		t.Fatalf("UpgradeBatch error = %v, want strategy type drift detected", err)
 	}
 }
