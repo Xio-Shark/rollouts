@@ -448,28 +448,34 @@ This complements the reconcile-time `ensureInflatedDeploymentStrategy` check: th
 
 The BatchRelease executor routes to the MinReadySeconds controller when the
 feature gate is enabled, **or** when the target Deployment still carries the
-MinReady original-value annotations:
+MinReady original-value annotations. The one exception is a Deployment that is
+mid-flight under a previously-started Recreate-based release: it must keep the
+Recreate strategy until it finishes, instead of being switched to MinReady mode
+after a controller upgrade:
 
 ```go
-if utilfeature.DefaultFeatureGate.Enabled(feature.MinReadySecondsStrategy) ||
-    r.deploymentHasMinReadyAnnotations(targetKey) {
+if r.useMinReadyController(ctx, targetKey) {
     return partitionstyle.NewControlPlane(partitiondeployment.NewMinReadyController, ...)
 }
 return partitionstyle.NewControlPlane(partitiondeployment.NewController, ...)
 ```
 
+`useMinReadyController` returns true when the Deployment carries MinReady
+original-strategy annotations, or when the gate is enabled and the Deployment is
+not under legacy Recreate control (`strategy.type=Recreate && paused=true`).
+
 The annotation clause is the important one for **gate lifecycle safety**. A
 Deployment that was already enrolled (RollingUpdate strategy, `paused=false`,
-inflated fields, four original annotations) is **not** recognized as under
-control by the legacy Recreate-mode controller, whose ownership check requires
-`strategy.type=Recreate && paused=true`. If the gate were turned off mid-rollout
-and routing fell back to the legacy controller, the workload would be stranded:
-`UpgradeBatch` skipped, `Finalize` a no-op, inflated fields and annotations left
-behind. Keeping MinReady control whenever the annotations are present lets an
-in-flight rollout finalize cleanly and restore the user's original strategy even
-after the gate is disabled. The `isMinReadyRelease` status helper is widened the
-same way, so degraded conditions are not silently suppressed once the gate flips
-off.
+inflated fields, three original-strategy annotations) is **not** recognized as
+under control by the legacy Recreate-mode controller, whose ownership check
+requires `strategy.type=Recreate && paused=true`. If the gate were turned off
+mid-rollout and routing fell back to the legacy controller, the workload would
+be stranded: `UpgradeBatch` skipped, `Finalize` a no-op, inflated fields and
+annotations left behind. Keeping MinReady control whenever the annotations are
+present lets an in-flight rollout finalize cleanly and restore the user's
+original strategy even after the gate is disabled. The `isMinReadyRelease`
+status helper is widened the same way, so degraded conditions are not silently
+suppressed once the gate flips off.
 
 No strategy value is copied through `ReleasePlan`; a disabled gate with no
 MinReady annotations, and unsupported workload shapes, fall through to the
@@ -528,7 +534,7 @@ This section is the operational contract for the alpha feature gate. It captures
 The `MinReadySecondsStrategy` gate is **cluster-scoped** (it lives on the kruise-rollout controller, not on individual Rollout resources). Enabling it changes the control mode for **every** native-Deployment partition-style rollout in the cluster, not a selected subset. Per-rollout opt-in is deferred to beta.
 
 - **Enabling**: turn the gate on before starting a rollout. Newly progressing Deployments are enrolled (strategy inflated) at admission time.
-- **Disabling — preconditions**: a Deployment that is mid-rollout under MinReady control carries the four `rollouts.kruise.io/original-*` annotations and has inflated `minReadySeconds`/`progressDeadlineSeconds`. The old Recreate-mode controller does **not** recognize such a Deployment as under its control (it keys on `strategy.type=Recreate && paused=true`). To avoid stranding a workload in a half-initialized inflated state, **finish or cancel all in-flight MinReady rollouts before disabling the gate.**
+- **Disabling — preconditions**: a Deployment that is mid-rollout under MinReady control carries the three `rollouts.kruise.io/original-*` annotations and has inflated `minReadySeconds`/`progressDeadlineSeconds`. The old Recreate-mode controller does **not** recognize such a Deployment as under its control (it keys on `strategy.type=Recreate && paused=true`). To avoid stranding a workload in a half-initialized inflated state, **finish or cancel all in-flight MinReady rollouts before disabling the gate.**
 - **Disabling — safety net**: if the gate is turned off mid-rollout anyway, the executor still routes a Deployment that carries the MinReady original annotations to the MinReady controller (it does not look only at the gate). This lets the rollout finalize and restore the original fields. Once finalized (annotations removed), routing falls back to the default controller. Verify cleanup with `kubectl get deploy <name> -o jsonpath='{.metadata.annotations}'` — no `rollouts.kruise.io/original-*` keys should remain.
 
 #### `progressDeadlineSeconds` inflation disables the native stuck-detector
