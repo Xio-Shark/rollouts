@@ -862,6 +862,46 @@ func TestExecutorFallsBackToRecreateWhenMinReadyFeatureGateDisabled(t *testing.T
 	}
 }
 
+// TestExecutorKeepsInProgressRecreateReleaseWhenMinReadyGateEnabled drives the
+// upgrade-compatibility guarantee: when the rollout controller is upgraded to
+// enable the MinReadySecondsStrategy gate while a Deployment is mid-flight
+// under a previously-started Recreate-based release, the in-progress release
+// must keep using the Recreate strategy to finish, instead of being switched
+// to the MinReady mode.
+func TestExecutorKeepsInProgressRecreateReleaseWhenMinReadyGateEnabled(t *testing.T) {
+	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
+	release := releaseDeploy.DeepCopy()
+	release.Spec.ReleasePlan.RollingStyle = v1beta1.PartitionRollingStyle
+	release.Status.Phase = v1beta1.RolloutPhasePreparing
+	deployment := stableDeploy.DeepCopy()
+	// A Deployment already claimed by the legacy Recreate-based controller:
+	// BatchReleaseControlAnnotation is set on stableDeploy, Recreate strategy
+	// and paused=true mark the in-progress release.
+	deployment.Spec.Strategy.Type = apps.RecreateDeploymentStrategyType
+	deployment.Spec.Paused = true
+	rec := record.NewFakeRecorder(100)
+	cli := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(release, deployment).
+		WithStatusSubresource(&v1beta1.BatchRelease{}).
+		Build()
+
+	controller, err := NewReleasePlanExecutor(cli, rec).getReleaseController(context.Background(), release, release.Status.DeepCopy())
+	if err != nil {
+		t.Fatalf("getReleaseController failed: %v", err)
+	}
+	if err := controller.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	got := &apps.Deployment{}
+	if err := cli.Get(context.TODO(), client.ObjectKeyFromObject(deployment), got); err != nil {
+		t.Fatalf("Get deployment failed: %v", err)
+	}
+	if got.Spec.Strategy.Type != apps.RecreateDeploymentStrategyType {
+		t.Fatalf("strategy.type = %q, want in-progress Recreate release to stay on Recreate after controller upgrade with MinReady gate enabled", got.Spec.Strategy.Type)
+	}
+}
+
 func TestMinReadyControlPlaneRecordsInitializedConditionAndEvent(t *testing.T) {
 	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
 	release := minReadyRelease()

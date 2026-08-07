@@ -46,6 +46,7 @@ import (
 	partitiondeployment "github.com/openkruise/rollouts/pkg/controller/batchrelease/control/partitionstyle/deployment"
 	"github.com/openkruise/rollouts/pkg/controller/batchrelease/control/partitionstyle/nativedaemonset"
 	"github.com/openkruise/rollouts/pkg/controller/batchrelease/control/partitionstyle/statefulset"
+	deploymentutil "github.com/openkruise/rollouts/pkg/controller/deployment/util"
 	"github.com/openkruise/rollouts/pkg/feature"
 	"github.com/openkruise/rollouts/pkg/util"
 	"github.com/openkruise/rollouts/pkg/util/errors"
@@ -247,14 +248,17 @@ func (r *Executor) getReleaseController(ctx context.Context, release *v1beta1.Ba
 			return partitionstyle.NewControlPlane(ctx, cloneset.NewController, r.client, r.recorder, release, newStatus, targetKey, gvk), nil
 		}
 		if targetRef.APIVersion == apps.SchemeGroupVersion.String() && targetRef.Kind == reflect.TypeOf(apps.Deployment{}).Name() {
-			// Route to the MinReady controller when the feature gate is enabled, or
-			// when the Deployment still carries MinReady original-strategy annotations.
-			// The latter covers the gate being turned off mid-rollout: the old
-			// Recreate-mode controller would not recognize an inflated RollingUpdate
-			// Deployment as under its control, leaving the workload stuck in a
-			// half-initialized state. Keeping MinReady control lets it finalize and
-			// restore the original fields.
-			if utilfeature.DefaultFeatureGate.Enabled(feature.MinReadySecondsStrategy) || r.deploymentHasMinReadyAnnotations(ctx, targetKey) {
+			// Route to the MinReady controller when the feature gate is enabled and
+			// the Deployment is not mid-flight under a previously-started Recreate
+			// release, or when the Deployment still carries MinReady original-strategy
+			// annotations. The annotation clause covers the gate being turned off
+			// mid-rollout: the old Recreate-mode controller would not recognize an
+			// inflated RollingUpdate Deployment as under its control, leaving the
+			// workload stuck in a half-initialized state. The Recreate-in-progress
+			// check covers upgrading the controller with the gate enabled: a release
+			// that started under the Recreate strategy must keep using it to finish,
+			// instead of being silently switched to the MinReady mode mid-flight.
+			if r.useMinReadyController(ctx, targetKey) {
 				klog.InfoS("Using Deployment MinReadySeconds partition-style release controller for this batch release", "workload name", targetKey.Name, "namespace", targetKey.Namespace)
 				return partitionstyle.NewControlPlane(ctx, partitiondeployment.NewMinReadyController, r.client, r.recorder, release, newStatus, targetKey, gvk), nil
 			}
@@ -269,17 +273,35 @@ func (r *Executor) getReleaseController(ctx context.Context, release *v1beta1.Ba
 	return partitionstyle.NewControlPlane(ctx, statefulset.NewController, r.client, r.recorder, release, newStatus, targetKey, gvk), nil
 }
 
-// deploymentHasMinReadyAnnotations reports whether the target Deployment still
-// carries MinReady original-strategy annotations, i.e. it was initialized by the
-// MinReady controller and not yet finalized. Used to keep MinReady routing when
-// the feature gate is disabled mid-rollout. A fetch failure (e.g. NotFound)
-// returns false so routing falls back to the default controller.
-func (r *Executor) deploymentHasMinReadyAnnotations(ctx context.Context, key types.NamespacedName) bool {
+// useMinReadyController reports whether the Deployment should be driven by the
+// MinReadySeconds controller instead of the legacy Recreate-based controller.
+// It returns true when either:
+//
+//  1. the Deployment still carries MinReady original-strategy annotations, i.e.
+//     it was initialized by the MinReady controller and not yet finalized (used
+//     to keep MinReady routing when the feature gate is disabled mid-rollout);
+//  2. the feature gate is enabled and the Deployment is not mid-flight under a
+//     previously-started Recreate release, i.e. it does not carry the
+//     BatchReleaseControlAnnotation with a Recreate strategy and paused=true.
+//     The second clause is the upgrade-compatibility guard: when the controller
+//     is upgraded with the gate enabled while a Recreate-based rollout is still
+//     in progress, the in-progress release must keep using the Recreate
+//     strategy to finish, instead of being switched to MinReady mode.
+//
+// A fetch failure (e.g. NotFound) returns whether the gate is enabled, so
+// routing stays stable on transient errors.
+func (r *Executor) useMinReadyController(ctx context.Context, key types.NamespacedName) bool {
 	deployment := &apps.Deployment{}
 	if err := r.client.Get(ctx, key, deployment); err != nil {
+		return utilfeature.DefaultFeatureGate.Enabled(feature.MinReadySecondsStrategy)
+	}
+	if v1beta1.HasMinReadyOriginalAnnotations(deployment.Annotations) {
+		return true
+	}
+	if !utilfeature.DefaultFeatureGate.Enabled(feature.MinReadySecondsStrategy) {
 		return false
 	}
-	return v1beta1.HasMinReadyOriginalAnnotations(deployment.Annotations)
+	return !deploymentutil.IsUnderRolloutControl(deployment)
 }
 
 func (r *Executor) moveToNextBatch(release *v1beta1.BatchRelease, status *v1beta1.BatchReleaseStatus) {
