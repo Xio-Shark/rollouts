@@ -42,8 +42,11 @@ type MinReadyControl struct {
 	statusWriter *partitionstyle.MinReadyStatusWriter
 }
 
-func (mc *MinReadyControl) IsMinReadyControl() bool {
-	return true
+// GetReporter returns mc itself, which implements the partitionstyle.Reporter
+// interface (lifecycle recording + failure reasons). The control plane drives
+// status reporting through it instead of type assertions.
+func (mc *MinReadyControl) GetReporter() partitionstyle.Reporter {
+	return mc
 }
 
 func (mc *MinReadyControl) BindStrategyStatus(release *v1beta1.BatchRelease, status *v1beta1.BatchReleaseStatus, recorder record.EventRecorder) {
@@ -468,11 +471,6 @@ func applyOriginalDeploymentStrategy(deployment *apps.Deployment, original *orig
 	}
 	deployment.Spec.Strategy.RollingUpdate.MaxUnavailable = original.maxUnavailable
 }
-
-// EventDegradedDriftDetected is the warning event reason recorded when
-// external drift of the inflated fields is detected. It equals the sentinel
-// error text so events, metrics and errors.Is classification stay in sync.
-var EventDegradedDriftDetected = partitionstyle.ErrMinReadyDriftDetected.Error()
 
 var _ partitionstyle.Interface = (*MinReadyControl)(nil)
 var _ partitionstyle.StrategyStatusBinder = (*MinReadyControl)(nil)

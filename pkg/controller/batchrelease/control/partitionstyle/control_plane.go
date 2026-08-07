@@ -50,7 +50,7 @@ type NewInterfaceFunc func(cli client.Client, key types.NamespacedName, gvk sche
 
 // NewControlPlane creates a new release controller with partitioned-style to drive batch release state machine
 func NewControlPlane(ctx context.Context, f NewInterfaceFunc, cli client.Client, recorder record.EventRecorder, release *v1beta1.BatchRelease, newStatus *v1beta1.BatchReleaseStatus, key types.NamespacedName, gvk schema.GroupVersionKind) *realBatchControlPlane {
-	return &realBatchControlPlane{
+	cp := &realBatchControlPlane{
 		Client:        cli,
 		EventRecorder: recorder,
 		newStatus:     newStatus,
@@ -59,6 +59,8 @@ func NewControlPlane(ctx context.Context, f NewInterfaceFunc, cli client.Client,
 		release:       release.DeepCopy(),
 		patcher:       labelpatch.NewLabelPatcher(cli, klog.KObj(release), release.Spec.ReleasePlan.Batches),
 	}
+	cp.bindStrategyStatus(cp.Interface)
+	return cp
 }
 
 func nonNilContext(ctx context.Context) context.Context {
@@ -68,6 +70,10 @@ func nonNilContext(ctx context.Context) context.Context {
 	return context.Background()
 }
 
+// bindStrategyStatus injects the BatchRelease status/event dependencies into
+// the controller once, at control-plane construction time. Only strategies
+// that implement StrategyStatusBinder (currently the MinReady controller, via
+// MinReadyStatusWriter) receive them; the others keep their nil reporter.
 func (rc *realBatchControlPlane) bindStrategyStatus(controller Interface) {
 	if binder, ok := controller.(StrategyStatusBinder); ok {
 		binder.BindStrategyStatus(rc.release, rc.newStatus, rc.EventRecorder)
@@ -78,17 +84,21 @@ func (rc *realBatchControlPlane) reportOperationFailed(controller Interface, rea
 	if err == nil {
 		return
 	}
-	if lifecycle, ok := controller.(StrategyLifecycle); ok {
-		lifecycle.RecordOperationFailed(reason, err)
-		return
+	if controller != nil {
+		if reporter := controller.GetReporter(); reporter != nil {
+			reporter.RecordOperationFailed(reason, err)
+			return
+		}
 	}
 	klog.ErrorS(err, "Partition-style control plane failed", "release", klog.KObj(rc.release), "reason", reason)
 }
 
 func (rc *realBatchControlPlane) failureReason(controller Interface, operation StrategyOperation) string {
-	if reasoner, ok := controller.(StrategyFailureReasoner); ok {
-		if reason := reasoner.FailureReason(operation); reason != "" {
-			return reason
+	if controller != nil {
+		if reporter := controller.GetReporter(); reporter != nil {
+			if reason := reporter.FailureReason(operation); reason != "" {
+				return reason
+			}
 		}
 	}
 	return fmt.Sprintf("PartitionStyle%sFailed", operation)
@@ -106,7 +116,6 @@ func (rc *realBatchControlPlane) Initialize() (err error) {
 		reportErr = err
 		return err
 	}
-	rc.bindStrategyStatus(controller)
 
 	// claim workload under our control
 	err = controller.Initialize(rc.ctx, rc.release)
@@ -114,8 +123,8 @@ func (rc *realBatchControlPlane) Initialize() (err error) {
 		reportErr = err
 		return err
 	}
-	if lifecycle, ok := controller.(StrategyLifecycle); ok {
-		lifecycle.RecordInitialized()
+	if reporter := controller.GetReporter(); reporter != nil {
+		reporter.RecordInitialized()
 	}
 
 	// record revision and replicas
@@ -128,6 +137,9 @@ func (rc *realBatchControlPlane) Initialize() (err error) {
 	noNeedUpdateReplicas, err := rc.markNoNeedUpdatePodsIfNeeds()
 	if noNeedUpdateReplicas != nil && err == nil {
 		rc.newStatus.CanaryStatus.NoNeedUpdateReplicas = noNeedUpdateReplicas
+	}
+	if err != nil {
+		reportErr = err
 	}
 	return err
 }
@@ -144,11 +156,10 @@ func (rc *realBatchControlPlane) UpgradeBatch() (err error) {
 		reportErr = err
 		return err
 	}
-	rc.bindStrategyStatus(controller)
 
 	if controller.GetWorkloadInfo().Replicas == 0 {
-		if lifecycle, ok := controller.(StrategyLifecycle); ok {
-			lifecycle.RecordZeroReplicaBatching()
+		if reporter := controller.GetReporter(); reporter != nil {
+			reporter.RecordZeroReplicaBatching()
 		}
 		return nil
 	}
@@ -177,8 +188,8 @@ func (rc *realBatchControlPlane) UpgradeBatch() (err error) {
 		reportErr = err
 		return err
 	}
-	if lifecycle, ok := controller.(StrategyLifecycle); ok {
-		lifecycle.RecordBatchAdvanced()
+	if reporter := controller.GetReporter(); reporter != nil {
+		reporter.RecordBatchAdvanced()
 	}
 	return nil
 }
@@ -195,11 +206,10 @@ func (rc *realBatchControlPlane) EnsureBatchPodsReadyAndLabeled() (err error) {
 		reportErr = err
 		return err
 	}
-	rc.bindStrategyStatus(controller)
 
 	if controller.GetWorkloadInfo().Replicas == 0 {
-		if lifecycle, ok := controller.(StrategyLifecycle); ok {
-			lifecycle.RecordZeroReplicaBatchReady()
+		if reporter := controller.GetReporter(); reporter != nil {
+			reporter.RecordZeroReplicaBatchReady()
 		}
 		return nil
 	}
@@ -223,13 +233,13 @@ func (rc *realBatchControlPlane) EnsureBatchPodsReadyAndLabeled() (err error) {
 	}
 
 	if err := batchContext.IsBatchReady(); err != nil {
-		if lifecycle, ok := controller.(StrategyLifecycle); ok {
-			lifecycle.ObserveBatchWait()
+		if reporter := controller.GetReporter(); reporter != nil {
+			reporter.ObserveBatchWait()
 		}
 		return err
 	}
-	if lifecycle, ok := controller.(StrategyLifecycle); ok {
-		lifecycle.RecordBatchReady()
+	if reporter := controller.GetReporter(); reporter != nil {
+		reporter.RecordBatchReady()
 	}
 	return nil
 }
@@ -249,15 +259,14 @@ func (rc *realBatchControlPlane) Finalize() (err error) {
 		}
 		return nil
 	}
-	rc.bindStrategyStatus(controller)
 
 	// release workload control info and clean up resources if it needs
 	if err := controller.Finalize(rc.ctx, rc.release); err != nil {
 		reportErr = err
 		return err
 	}
-	if lifecycle, ok := controller.(StrategyLifecycle); ok {
-		lifecycle.RecordFinalized()
+	if reporter := controller.GetReporter(); reporter != nil {
+		reporter.RecordFinalized()
 	}
 	return nil
 }

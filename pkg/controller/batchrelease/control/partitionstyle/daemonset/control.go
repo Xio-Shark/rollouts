@@ -44,6 +44,12 @@ func (rc *realController) GetWorkloadInfo() *util.WorkloadInfo {
 	return rc.WorkloadInfo
 }
 
+// GetReporter returns nil: the DaemonSet partition controller does not report
+// strategy-level status.
+func (rc *realController) GetReporter() partitionstyle.Reporter {
+	return nil
+}
+
 // BuildController will get workload object and parse workload info,
 // and return a initialized controller for workload.
 func (rc *realController) BuildController() (partitionstyle.Interface, error) {

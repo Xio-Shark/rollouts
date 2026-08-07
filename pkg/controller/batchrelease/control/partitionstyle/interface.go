@@ -49,4 +49,8 @@ type Interface interface {
 	// - free the stable workload from rollout control;
 	// - resume workload if we need.
 	Finalize(ctx context.Context, release *v1beta1.BatchRelease) error
+	// GetReporter returns the strategy-specific status reporter, or nil when
+	// the strategy does not report strategy-level status. The control plane
+	// calls it to avoid type assertions on concrete controller types.
+	GetReporter() Reporter
 }

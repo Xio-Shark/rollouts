@@ -58,6 +58,12 @@ func (rc *realController) GetWorkloadInfo() *util.WorkloadInfo {
 	return rc.WorkloadInfo
 }
 
+// GetReporter returns nil: the StatefulSet partition controller does not
+// report strategy-level status.
+func (rc *realController) GetReporter() partitionstyle.Reporter {
+	return nil
+}
+
 func (rc *realController) BuildController() (partitionstyle.Interface, error) {
 	if rc.object != nil {
 		return rc, nil

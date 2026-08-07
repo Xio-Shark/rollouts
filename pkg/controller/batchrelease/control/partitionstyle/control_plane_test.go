@@ -77,6 +77,13 @@ func (f *fakePartitionController) BuildController() (Interface, error) {
 	return f, nil
 }
 
+func (f *fakePartitionController) GetReporter() Reporter {
+	if !f.minReady {
+		return nil
+	}
+	return f
+}
+
 func (f *fakePartitionController) BindStrategyStatus(release *v1beta1.BatchRelease, status *v1beta1.BatchReleaseStatus, recorder record.EventRecorder) {
 	if f.minReady {
 		f.statusWriter = NewMinReadyStatusWriter(release, status, recorder)
@@ -192,10 +199,6 @@ func (f *fakePartitionController) ReconcileMaxUnavailableDrift(context.Context, 
 func (f *fakePartitionController) Finalize(context.Context, *v1beta1.BatchRelease) error {
 	f.finalizeCalls++
 	return f.finalizeErr
-}
-
-func (f *fakePartitionController) IsMinReadyControl() bool {
-	return f.minReady
 }
 
 type fakeBatchLabelPatcher struct {
@@ -592,7 +595,7 @@ func TestControlPlaneNoNeedUpdateReplicaHelpers(t *testing.T) {
 }
 
 func newTestControlPlane(controller *fakePartitionController, status *v1beta1.BatchReleaseStatus) *realBatchControlPlane {
-	return &realBatchControlPlane{
+	rc := &realBatchControlPlane{
 		Interface:     controller,
 		Client:        fake.NewClientBuilder().Build(),
 		EventRecorder: record.NewFakeRecorder(20),
@@ -601,6 +604,8 @@ func newTestControlPlane(controller *fakePartitionController, status *v1beta1.Ba
 		release:       testBatchRelease(),
 		newStatus:     status,
 	}
+	rc.bindStrategyStatus(controller)
+	return rc
 }
 
 func testBatchRelease() *v1beta1.BatchRelease {
