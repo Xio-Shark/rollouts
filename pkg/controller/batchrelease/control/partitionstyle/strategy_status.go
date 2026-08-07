@@ -63,6 +63,14 @@ type StrategyFailureReasoner interface {
 	FailureReason(operation StrategyOperation) string
 }
 
+// Reporter is the strategy-specific status reporting surface the control plane
+// drives through Interface.GetReporter. Strategy controllers that do not report
+// strategy status return nil, so the control plane needs no type assertions.
+type Reporter interface {
+	StrategyLifecycle
+	StrategyFailureReasoner
+}
+
 // MinReadyDriftReconciler converges inflated maxUnavailable back to the active
 // batch target. EnsureBatchPodsReadyAndLabeled calls it so external drift is
 // healed even while BatchRelease waits in ReadyBatchState for rollout resume.
@@ -162,23 +170,30 @@ func (w *MinReadyStatusWriter) RecordDegraded(reason string, err error) {
 	}
 }
 
+// observeMinReadyBatchDuration observes the per-batch duration based on
+// LastUpdateTime. The Batching condition stays True (only reason/message
+// change) across MinReadyBatching→MinReadyBatchReady→MinReadyBatching
+// transitions, so LastTransitionTime stays anchored to batch 0 and would
+// measure the whole release; LastUpdateTime is refreshed on every
+// SetBatchReleaseCondition set, giving the per-batch window.
 func observeMinReadyBatchDuration(release *v1beta1.BatchRelease, condition *v1beta1.RolloutCondition) {
-	if release == nil || condition == nil || condition.LastTransitionTime.IsZero() {
+	if release == nil || condition == nil || condition.LastUpdateTime.IsZero() {
 		return
 	}
-	duration := time.Since(condition.LastTransitionTime.Time)
+	duration := time.Since(condition.LastUpdateTime.Time)
 	if duration < 0 {
 		return
 	}
 	brmetrics.ObserveMinReadyBatchDuration(release, duration)
 }
 
-// ObserveMinReadyBatchWait updates the stuck-seconds metric while a batch waits to become ready.
+// ObserveMinReadyBatchWait updates the stuck-seconds metric while a batch waits
+// to become ready. Same LastUpdateTime rationale as observeMinReadyBatchDuration.
 func ObserveMinReadyBatchWait(release *v1beta1.BatchRelease, condition *v1beta1.RolloutCondition) {
-	if release == nil || condition == nil || condition.LastTransitionTime.IsZero() {
+	if release == nil || condition == nil || condition.LastUpdateTime.IsZero() {
 		return
 	}
-	duration := time.Since(condition.LastTransitionTime.Time)
+	duration := time.Since(condition.LastUpdateTime.Time)
 	if duration < 0 {
 		return
 	}

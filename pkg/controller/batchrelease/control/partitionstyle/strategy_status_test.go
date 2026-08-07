@@ -370,6 +370,99 @@ func TestObserveMinReadyBatchWaitSetsStuckGauge(t *testing.T) {
 	}
 }
 
+// TestRecordMinReadyNormalMultiBatchResetsBatchDuration drives the per-batch
+// window semantics: the Batching condition stays True across
+// MinReadyBatching→MinReadyBatchReady→MinReadyBatching transitions, so
+// LastTransitionTime stays anchored to batch 0. Both durations must be
+// computed from LastUpdateTime instead, so the second batch observes ~0s
+// rather than accumulating the whole release time.
+func TestRecordMinReadyNormalMultiBatchResetsBatchDuration(t *testing.T) {
+	_ = utilfeature.DefaultMutableFeatureGate.Set(string(feature.MinReadySecondsStrategy) + "=true")
+	release := &v1beta1.BatchRelease{
+		ObjectMeta: metav1.ObjectMeta{Name: "multi-batch-duration", Namespace: "default"},
+		Spec: v1beta1.BatchReleaseSpec{
+			WorkloadRef: v1beta1.ObjectRef{APIVersion: apps.SchemeGroupVersion.String(), Kind: "Deployment", Name: "demo"},
+			ReleasePlan: v1beta1.ReleasePlan{RollingStyle: v1beta1.PartitionRollingStyle},
+		},
+	}
+	brmetrics.DeleteMinReadyMetrics(release)
+	defer brmetrics.DeleteMinReadyMetrics(release)
+
+	status := &v1beta1.BatchReleaseStatus{}
+	batch0Started := metav1.NewTime(time.Now().Add(-5 * time.Second))
+	util.SetBatchReleaseCondition(status, v1beta1.RolloutCondition{
+		Type:               v1beta1.RolloutConditionStrategyBatching,
+		Status:             v1.ConditionTrue,
+		Reason:             "MinReadyBatching",
+		Message:            "MinReadySeconds strategy advanced the current batch",
+		LastTransitionTime: batch0Started,
+		LastUpdateTime:     batch0Started,
+	})
+	rc := &MinReadyStatusWriter{
+		release:  release,
+		status:   status,
+		recorder: record.NewFakeRecorder(4),
+	}
+
+	// batch 0 ready: observes ~5s since batch0Started.
+	rc.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
+	// batch 1 starts: reason changes back to MinReadyBatching, so the
+	// condition is re-set and LastUpdateTime refreshes to now.
+	rc.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatching", "MinReadySeconds strategy advanced the current batch")
+	// batch 1 ready: must observe ~0s since the refresh, not accumulate.
+	rc.RecordNormal(v1beta1.RolloutConditionStrategyBatching, "MinReadyBatchReady", "MinReadySeconds strategy batch is ready")
+
+	histogram := findHistogramMetric(t, "rollout_minready_batch_duration_seconds", map[string]string{
+		"rollout":   release.Name,
+		"namespace": release.Namespace,
+	})
+	if histogram.GetSampleCount() != 2 {
+		t.Fatalf("histogram sample count = %d, want 2", histogram.GetSampleCount())
+	}
+	// With LastTransitionTime anchoring, the sum would be ~10s (both batches
+	// measured from batch 0); with LastUpdateTime it is ~5s. Tolerate
+	// scheduling noise on the second (near-zero) sample.
+	if sum := histogram.GetSampleSum(); sum >= 8 {
+		t.Fatalf("histogram sample sum = %v, want < 8 (per-batch duration must reset)", sum)
+	}
+}
+
+// TestObserveMinReadyBatchWaitMultiBatchResetsGauge drives the same per-batch
+// reset for the stuck-seconds gauge: after the condition is refreshed for the
+// next batch, the gauge must reflect the current batch wait, not accumulate
+// across batches.
+func TestObserveMinReadyBatchWaitMultiBatchResetsGauge(t *testing.T) {
+	release := &v1beta1.BatchRelease{
+		ObjectMeta: metav1.ObjectMeta{Name: "multi-batch-stuck", Namespace: "default"},
+	}
+	brmetrics.DeleteMinReadyMetrics(release)
+	defer brmetrics.DeleteMinReadyMetrics(release)
+
+	condition := &v1beta1.RolloutCondition{
+		Type:               v1beta1.RolloutConditionStrategyBatching,
+		Status:             v1.ConditionTrue,
+		Reason:             "MinReadyBatching",
+		Message:            "MinReadySeconds strategy advanced the current batch",
+		LastTransitionTime: metav1.NewTime(time.Now().Add(-5 * time.Second)),
+		LastUpdateTime:     metav1.NewTime(time.Now().Add(-4 * time.Second)),
+	}
+	ObserveMinReadyBatchWait(release, condition)
+
+	// Simulate the next batch: SetBatchReleaseCondition refreshes
+	// LastUpdateTime while LastTransitionTime stays anchored to batch 0.
+	condition.LastUpdateTime = metav1.Now()
+	ObserveMinReadyBatchWait(release, condition)
+
+	gauge := findGaugeMetric(t, "rollout_minready_stuck_seconds", map[string]string{
+		"rollout":   release.Name,
+		"namespace": release.Namespace,
+		"reason":    "batch_ready_timeout",
+	})
+	if gauge.GetValue() >= 1 {
+		t.Fatalf("gauge value = %v, want < 1 (stuck seconds must reset per batch, not accumulate)", gauge.GetValue())
+	}
+}
+
 func TestClassifyMinReadyDegradedReason(t *testing.T) {
 	cases := []struct {
 		name   string
