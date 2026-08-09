@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -296,20 +297,40 @@ func (mc *MinReadyControl) Finalize(ctx context.Context, _ *v1beta1.BatchRelease
 		}
 		return nil
 	}
-	original := mc.object
-	restored, err := parseOriginalDeploymentStrategy(original.Annotations)
+	// The Rollout controller restores the same Deployment concurrently while a
+	// Rollout deletion finalizes the BatchRelease, so the optimistic-lock patch
+	// below can hit a resourceVersion conflict. Refresh the Deployment and retry
+	// on conflict so finalization completes instead of getting stuck.
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := mc.refreshDeployment(ctx); err != nil {
+			return err
+		}
+		if !hasAnyOriginalAnnotation(mc.object.Annotations) {
+			if hasInflatedDeploymentFields(mc.object) {
+				return fmt.Errorf("MinReadyControl.Finalize: annotation state missing while deployment fields are still inflated: %w",
+					partitionstyle.ErrMinReadyAnnotationInvalid)
+			}
+			return nil
+		}
+		original := mc.object
+		restored, err := parseOriginalDeploymentStrategy(original.Annotations)
+		if err != nil {
+			return fmt.Errorf("MinReadyControl.Finalize: %w", err)
+		}
+		modified := mc.object.DeepCopy()
+		applyOriginalDeploymentStrategy(modified, restored)
+		for _, key := range AllOriginalAnnotations {
+			delete(modified.Annotations, key)
+		}
+		delete(modified.Annotations, util.BatchReleaseControlAnnotation)
+		delete(modified.Labels, v1alpha1.DeploymentStableRevisionLabel)
+		patch := client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})
+		if err := mc.client.Patch(ctx, modified, patch); err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("MinReadyControl.Finalize: %w", err)
-	}
-	modified := mc.object.DeepCopy()
-	applyOriginalDeploymentStrategy(modified, restored)
-	for _, key := range AllOriginalAnnotations {
-		delete(modified.Annotations, key)
-	}
-	delete(modified.Annotations, util.BatchReleaseControlAnnotation)
-	delete(modified.Labels, v1alpha1.DeploymentStableRevisionLabel)
-	patch := client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})
-	if err := mc.client.Patch(ctx, modified, patch); err != nil {
 		return fmt.Errorf("MinReadyControl.Finalize: %w", err)
 	}
 	return nil
