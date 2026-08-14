@@ -301,9 +301,17 @@ func (mc *MinReadyControl) Finalize(ctx context.Context, _ *v1beta1.BatchRelease
 	// Rollout deletion finalizes the BatchRelease, so the optimistic-lock patch
 	// below can hit a resourceVersion conflict. Refresh the Deployment and retry
 	// on conflict so finalization completes instead of getting stuck.
+	//
+	// E2E AfterEach (and operators) may also delete the Deployment before
+	// BatchRelease finishes Finalize. BuildController can still succeed from a
+	// cached object, then Get/Patch return NotFound and would otherwise leave
+	// the BatchRelease finalizer stuck, blocking namespace deletion.
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if err := mc.refreshDeployment(ctx); err != nil {
-			return err
+			return client.IgnoreNotFound(err)
+		}
+		if !mc.object.DeletionTimestamp.IsZero() {
+			return nil
 		}
 		if !hasAnyOriginalAnnotation(mc.object.Annotations) {
 			if hasInflatedDeploymentFields(mc.object) {
@@ -326,7 +334,7 @@ func (mc *MinReadyControl) Finalize(ctx context.Context, _ *v1beta1.BatchRelease
 		delete(modified.Labels, v1alpha1.DeploymentStableRevisionLabel)
 		patch := client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})
 		if err := mc.client.Patch(ctx, modified, patch); err != nil {
-			return err
+			return client.IgnoreNotFound(err)
 		}
 		return nil
 	})

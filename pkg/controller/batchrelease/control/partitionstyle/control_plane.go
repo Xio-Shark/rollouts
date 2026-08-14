@@ -260,10 +260,14 @@ func (rc *realBatchControlPlane) Finalize() (err error) {
 		return nil
 	}
 
-	// release workload control info and clean up resources if it needs
+	// release workload control info and clean up resources if it needs.
+	// AfterEach / operators may delete the workload before Finalize patches it;
+	// treat NotFound as already cleaned up so the BatchRelease finalizer can drop.
 	if err := controller.Finalize(rc.ctx, rc.release); err != nil {
-		reportErr = err
-		return err
+		if err := client.IgnoreNotFound(err); err != nil {
+			reportErr = err
+			return err
+		}
 	}
 	if reporter := controller.GetReporter(); reporter != nil {
 		reporter.RecordFinalized()

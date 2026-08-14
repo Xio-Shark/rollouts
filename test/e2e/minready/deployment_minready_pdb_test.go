@@ -23,7 +23,6 @@ import (
 	. "github.com/onsi/gomega"
 	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -41,12 +40,7 @@ var _ = SIGDescribe("Deployment MinReadySeconds PDB", func() {
 	})
 
 	AfterEach(func() {
-		_ = k8sClient.DeleteAllOf(context.TODO(), &v1beta1.BatchRelease{}, client.InNamespace(namespace))
-		_ = k8sClient.DeleteAllOf(context.TODO(), &v1beta1.Rollout{}, client.InNamespace(namespace))
-		_ = k8sClient.DeleteAllOf(context.TODO(), &policyv1.PodDisruptionBudget{}, client.InNamespace(namespace))
-		_ = k8sClient.DeleteAllOf(context.TODO(), &apps.Deployment{}, client.InNamespace(namespace))
-		Expect(k8sClient.Delete(context.TODO(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})).Should(Succeed())
-		waitMinReadyE2ENamespaceGone(namespace)
+		teardownMinReadyE2ENamespace(namespace)
 	})
 
 	KruiseDescribe("MinReadySeconds PDB coexistence", func() {

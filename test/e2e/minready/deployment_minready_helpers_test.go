@@ -40,6 +40,35 @@ import (
 
 const minReadyE2EDeploymentName = "minready-demo"
 
+// teardownMinReadyE2ENamespace deletes MinReady E2E objects in an order that
+// lets BatchRelease Finalize restore the Deployment before it is removed, then
+// force-deletes leftover pods so namespace GC is not blocked by grace periods.
+func teardownMinReadyE2ENamespace(namespace string) {
+	ctx := context.TODO()
+	_ = k8sClient.DeleteAllOf(ctx, &v1beta1.BatchRelease{}, client.InNamespace(namespace))
+	_ = k8sClient.DeleteAllOf(ctx, &v1beta1.Rollout{}, client.InNamespace(namespace))
+	waitMinReadyE2EReleasesGone(namespace)
+	_ = k8sClient.DeleteAllOf(ctx, &policyv1.PodDisruptionBudget{}, client.InNamespace(namespace))
+	_ = k8sClient.DeleteAllOf(ctx, &apps.Deployment{}, client.InNamespace(namespace))
+	_ = k8sClient.DeleteAllOf(ctx, &corev1.Pod{}, client.InNamespace(namespace), client.GracePeriodSeconds(0))
+	Expect(k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})).Should(Succeed())
+	waitMinReadyE2ENamespaceGone(namespace)
+}
+
+func waitMinReadyE2EReleasesGone(namespace string) {
+	Eventually(func() bool {
+		rollouts := &v1beta1.RolloutList{}
+		if err := k8sClient.List(context.TODO(), rollouts, client.InNamespace(namespace)); err != nil {
+			return false
+		}
+		releases := &v1beta1.BatchReleaseList{}
+		if err := k8sClient.List(context.TODO(), releases, client.InNamespace(namespace)); err != nil {
+			return false
+		}
+		return len(rollouts.Items) == 0 && len(releases.Items) == 0
+	}, 1*time.Minute, time.Second).Should(BeTrue())
+}
+
 // waitMinReadyE2ENamespaceGone polls until the namespace has been deleted,
 // replacing fixed sleeps after teardown deletes.
 func waitMinReadyE2ENamespaceGone(namespace string) {
@@ -64,12 +93,15 @@ func newMinReadyE2EDeployment(namespace string) *apps.Deployment {
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": minReadyE2EDeploymentName}},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": minReadyE2EDeploymentName}},
-				Spec: corev1.PodSpec{Containers: []corev1.Container{{
-					Name:            "echoserver",
-					Image:           "cilium/echoserver:latest",
-					ImagePullPolicy: corev1.PullIfNotPresent,
-					Env:             []corev1.EnvVar{{Name: "NODE_NAME", Value: "version1"}},
-				}}},
+				Spec: corev1.PodSpec{
+					TerminationGracePeriodSeconds: pointer.Int64(0),
+					Containers: []corev1.Container{{
+						Name:            "echoserver",
+						Image:           "cilium/echoserver:latest",
+						ImagePullPolicy: corev1.PullIfNotPresent,
+						Env:             []corev1.EnvVar{{Name: "NODE_NAME", Value: "version1"}},
+					}},
+				},
 			},
 			Strategy: apps.DeploymentStrategy{
 				Type: apps.RollingUpdateDeploymentStrategyType,
